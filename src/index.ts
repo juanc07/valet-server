@@ -2,6 +2,8 @@ import express, { Request, Response, Express, RequestHandler } from "express";
 import dotenv from "dotenv";
 import cors from "cors";
 import { v4 as uuidv4 } from "uuid";
+import { TwitterApi, TwitterApiTokens } from "twitter-api-v2"; // Import TwitterApiTokens type
+import OpenAI from "openai";
 import { connectToDatabase } from "./db";
 import { Agent } from "./types/agent";
 import { User } from "./types/user";
@@ -38,9 +40,17 @@ interface UserParams {
   userId: string;
 }
 
+interface ChatParams {
+  agentId: string;
+}
+
 async function startServer() {
   try {
-    await connectToDatabase();
+    const db = await connectToDatabase();
+
+    // Start Twitter listeners for all valid agents
+    await setupTwitterListeners(db);
+
     app.listen(port, () => {
       console.log(`Server running on port ${port}`);
     });
@@ -65,6 +75,16 @@ const createAgent: RequestHandler = async (req: Request, res: Response) => {
         isActive: true,
       };
       const result = await db.collection("agents").insertOne(newAgent);
+      // Start Twitter listener if all required Twitter credentials are present
+      if (
+        newAgent.twitterHandle &&
+        newAgent.twitterAppKey &&
+        newAgent.twitterAppSecret &&
+        newAgent.twitterAccessToken &&
+        newAgent.twitterAccessSecret
+      ) {
+        setupTwitterListener(newAgent);
+      }
       res.status(201).json({ _id: result.insertedId, ...newAgent });
     }
   } catch (error) {
@@ -262,6 +282,110 @@ const deleteAllUsers: RequestHandler = async (req: Request, res: Response) => {
   }
 };
 
+// Chat Endpoint
+const chatWithAgent: RequestHandler<ChatParams> = async (req: Request<ChatParams>, res: Response) => {
+  try {
+    const db = await connectToDatabase();
+    const agentId = req.params.agentId;
+    const { message } = req.body;
+
+    if (!message) {
+      res.status(400).json({ error: "Message is required" });
+      return;
+    }
+
+    const agent = await db.collection("agents").findOne({ id: agentId });
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+
+    if (!agent.openaiApiKey) {
+      res.status(400).json({ error: "Agent lacks OpenAI API key" });
+      return;
+    }
+
+    const openai = new OpenAI({ apiKey: agent.openaiApiKey });
+    const response = await openai.chat.completions.create({
+      model: "gpt-3.5-turbo",
+      messages: [{ role: "user", content: message }],
+    });
+
+    const reply = response.choices[0].message.content;
+    res.status(200).json({ agentId, reply });
+  } catch (error) {
+    console.error("Chat error:", error);
+    res.status(500).json({ error: "Failed to get response from agent" });
+  }
+};
+
+// Twitter Listener Setup
+async function setupTwitterListeners(db: any) {
+  const agents = await db.collection("agents").find({
+    twitterHandle: { $exists: true, $ne: "" },
+    twitterAppKey: { $exists: true, $ne: "" },
+    twitterAppSecret: { $exists: true, $ne: "" },
+    twitterAccessToken: { $exists: true, $ne: "" },
+    twitterAccessSecret: { $exists: true, $ne: "" },
+    openaiApiKey: { $exists: true, $ne: "" }
+  }).toArray();
+
+  agents.forEach((agent: Agent) => setupTwitterListener(agent));
+}
+
+async function setupTwitterListener(agent: Agent) {
+  const twitterTokens: TwitterApiTokens = {
+    appKey: agent.twitterAppKey!,
+    appSecret: agent.twitterAppSecret!,
+    accessToken: agent.twitterAccessToken!,
+    accessSecret: agent.twitterAccessSecret!,
+  };
+
+  const twitterClient = new TwitterApi(twitterTokens);
+  const openai = new OpenAI({ apiKey: agent.openaiApiKey });
+
+  try {
+    // Clear existing rules (optional, for testing)
+    const currentRules = await twitterClient.v2.streamRules();
+    if (currentRules.data && currentRules.data.length > 0) {
+      await twitterClient.v2.updateStreamRules({
+        delete: { ids: currentRules.data.map(rule => rule.id) }
+      });
+    }
+
+    // Add rule for this agent's Twitter handle
+    await twitterClient.v2.updateStreamRules({
+      add: [{ value: `@${agent.twitterHandle}`, tag: agent.id }],
+    });
+
+    const stream = await twitterClient.v2.searchStream({
+      "tweet.fields": ["author_id", "text", "in_reply_to_user_id"],
+    });
+
+    stream.on('data', async (tweet) => {
+      if (tweet.data.text.includes(`@${agent.twitterHandle}`)) {
+        const response = await openai.chat.completions.create({
+          model: "gpt-3.5-turbo",
+          messages: [{ role: "user", content: tweet.data.text }],
+        });
+        const replyText = `@${tweet.data.author_id} ${response.choices[0].message.content}`.slice(0, 280);
+
+        await twitterClient.v1.tweet(replyText); // Use v1 API for tweeting
+        console.log(`Agent ${agent.id} replied to tweet: ${replyText}`);
+      }
+    });
+
+    stream.on('error', (error) => {
+      console.error(`Twitter stream error for agent ${agent.id}:`, error);
+    });
+
+    // Keep stream alive
+    stream.autoReconnect = true;
+  } catch (error) {
+    console.error(`Failed to setup Twitter listener for agent ${agent.id}:`, error);
+  }
+}
+
 // Register routes
 app.post("/agents", createAgent);
 app.get("/agents", getAllAgents);
@@ -277,5 +401,6 @@ app.put("/users/:userId", updateUser);
 app.delete("/users/:userId", deleteUser);
 app.delete("/users", deleteAllUsers);
 
-// Start the server
+app.post("/chat/:agentId", chatWithAgent);
+
 startServer();

@@ -16,6 +16,7 @@
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.0",
     "@types/node": "^22.13.9",
+    "@types/socket.io": "^3.0.2",
     "@types/uuid": "^10.0.0",
     "ts-node-dev": "^2.0.0",
     "typescript": "^5.4.5"
@@ -25,6 +26,9 @@
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "mongodb": "^6.14.2",
+    "openai": "^4.86.1",
+    "socket.io": "^4.8.1",
+    "twitter-api-v2": "^1.20.2",
     "uuid": "^11.1.0"
   }
 }

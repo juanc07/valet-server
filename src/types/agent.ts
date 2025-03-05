@@ -38,10 +38,13 @@ export interface Agent {
     platforms: string[];
   };
   ruleIds: string[];
-  isActive?: boolean; // Optional field to track active status
-  openaiApiKey?: string; // Optional OpenAI API key
-  twitterApiKey?: string; // Optional Twitter API key
-  twitterSecretKey?: string; // Optional Twitter secret key
-  agentType: "basic" | "puppetos" | "thirdparty"; // Enum-like type for agent type
-  userId: string; // Required field for the creator's user ID
+  isActive?: boolean;
+  openaiApiKey?: string;
+  twitterAppKey?: string;
+  twitterAppSecret?: string;
+  twitterAccessToken?: string;
+  twitterAccessSecret?: string;
+  twitterHandle?: string;
+  agentType: "basic" | "puppetos" | "thirdparty";
+  userId: string;  
 }
