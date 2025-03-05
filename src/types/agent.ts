@@ -43,4 +43,5 @@ export interface Agent {
   twitterApiKey?: string; // Optional Twitter API key
   twitterSecretKey?: string; // Optional Twitter secret key
   agentType: "basic" | "puppetos" | "thirdparty"; // Enum-like type for agent type
+  userId: string; // Required field for the creator's user ID
 }

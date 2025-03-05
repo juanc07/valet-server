@@ -11,7 +11,7 @@ export async function connectToDatabase(): Promise<Db> {
 
   const client = new MongoClient(uri);
   await client.connect();
-  db = client.db("valet-ai-agent-db");
+  db = client.db("valet-db");
   console.log("Connected to MongoDB");
   return db;
 }
