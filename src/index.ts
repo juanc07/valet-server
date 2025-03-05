@@ -75,7 +75,6 @@ const createAgent: RequestHandler = async (req: Request, res: Response) => {
         isActive: true,
       };
       const result = await db.collection("agents").insertOne(newAgent);
-      // Start Twitter listener only if all Twitter credentials and handle are valid strings
       if (
         typeof newAgent.twitterHandle === "string" &&
         newAgent.twitterHandle.trim() !== "" &&
@@ -293,7 +292,7 @@ const deleteAllUsers: RequestHandler = async (req: Request, res: Response) => {
   }
 };
 
-// Chat Endpoint
+// Chat Endpoint (Non-Streaming)
 const chatWithAgent: RequestHandler<ChatParams> = async (req: Request<ChatParams>, res: Response) => {
   try {
     const db = await connectToDatabase();
@@ -330,6 +329,57 @@ const chatWithAgent: RequestHandler<ChatParams> = async (req: Request<ChatParams
   }
 };
 
+// Chat Endpoint (Streaming)
+const chatWithAgentStream: RequestHandler<ChatParams> = async (req: Request<ChatParams>, res: Response) => {
+  try {
+    const db = await connectToDatabase();
+    const agentId = req.params.agentId;
+    const { message } = req.body;
+
+    if (!message) {
+      res.status(400).json({ error: "Message is required" });
+      return;
+    }
+
+    const agent = await db.collection("agents").findOne({ id: agentId });
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+
+    if (!agent.openaiApiKey) {
+      res.status(400).json({ error: "Agent lacks OpenAI API key" });
+      return;
+    }
+
+    const openai = new OpenAI({ apiKey: agent.openaiApiKey });
+
+    // Set headers for streaming
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+
+    const stream = await openai.chat.completions.create({
+      model: "gpt-3.5-turbo",
+      messages: [{ role: "user", content: message }],
+      stream: true,
+    });
+
+    for await (const chunk of stream) {
+      const content = chunk.choices[0]?.delta?.content || "";
+      if (content) {
+        res.write(`data: ${JSON.stringify({ agentId, content })}\n\n`);
+      }
+    }
+
+    res.write("data: [DONE]\n\n");
+    res.end();
+  } catch (error) {
+    console.error("Streaming chat error:", error);
+    res.status(500).send("Error streaming response from agent");
+  }
+};
+
 // Twitter Listener Setup
 async function setupTwitterListeners(db: any) {
   try {
@@ -343,7 +393,6 @@ async function setupTwitterListeners(db: any) {
     }).toArray();
 
     agents.forEach((agent: Agent) => {
-      // Additional check for valid string values
       if (
         typeof agent.twitterHandle === "string" &&
         agent.twitterHandle.trim() !== "" &&
@@ -363,7 +412,6 @@ async function setupTwitterListeners(db: any) {
     });
   } catch (error) {
     console.error("Error setting up Twitter listeners:", error);
-    // Log the error but don't crash the server
   }
 }
 
@@ -379,7 +427,6 @@ async function setupTwitterListener(agent: Agent) {
   const openai = new OpenAI({ apiKey: agent.openaiApiKey });
 
   try {
-    // Clear existing rules (optional, for testing)
     const currentRules = await twitterClient.v2.streamRules();
     if (currentRules.data && currentRules.data.length > 0) {
       await twitterClient.v2.updateStreamRules({
@@ -387,7 +434,6 @@ async function setupTwitterListener(agent: Agent) {
       });
     }
 
-    // Add rule for this agent's Twitter handle
     await twitterClient.v2.updateStreamRules({
       add: [{ value: `@${agent.twitterHandle}`, tag: agent.id }],
     });
@@ -417,7 +463,6 @@ async function setupTwitterListener(agent: Agent) {
       console.error(`Twitter stream error for agent ${agent.id}:`, error);
     });
 
-    // Keep stream alive
     stream.autoReconnect = true;
   } catch (error) {
     console.error(`Failed to setup Twitter listener for agent ${agent.id}:`, error);
@@ -440,5 +485,6 @@ app.delete("/users/:userId", deleteUser);
 app.delete("/users", deleteAllUsers);
 
 app.post("/chat/:agentId", chatWithAgent);
+app.post("/chat/stream/:agentId", chatWithAgentStream);
 
 startServer();
