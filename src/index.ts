@@ -2,7 +2,7 @@ import express, { Request, Response, Express, RequestHandler } from "express";
 import dotenv from "dotenv";
 import cors from "cors";
 import { v4 as uuidv4 } from "uuid";
-import { TwitterApi, TwitterApiTokens } from "twitter-api-v2"; // Import TwitterApiTokens type
+import { TwitterApi, TwitterApiTokens } from "twitter-api-v2";
 import OpenAI from "openai";
 import { connectToDatabase } from "./db";
 import { Agent } from "./types/agent";
@@ -75,20 +75,31 @@ const createAgent: RequestHandler = async (req: Request, res: Response) => {
         isActive: true,
       };
       const result = await db.collection("agents").insertOne(newAgent);
-      // Start Twitter listener if all required Twitter credentials are present
+      // Start Twitter listener only if all Twitter credentials and handle are valid strings
       if (
-        newAgent.twitterHandle &&
-        newAgent.twitterAppKey &&
-        newAgent.twitterAppSecret &&
-        newAgent.twitterAccessToken &&
-        newAgent.twitterAccessSecret
+        typeof newAgent.twitterHandle === "string" &&
+        newAgent.twitterHandle.trim() !== "" &&
+        typeof newAgent.twitterAppKey === "string" &&
+        newAgent.twitterAppKey.trim() !== "" &&
+        typeof newAgent.twitterAppSecret === "string" &&
+        newAgent.twitterAppSecret.trim() !== "" &&
+        typeof newAgent.twitterAccessToken === "string" &&
+        newAgent.twitterAccessToken.trim() !== "" &&
+        typeof newAgent.twitterAccessSecret === "string" &&
+        newAgent.twitterAccessSecret.trim() !== ""
       ) {
-        setupTwitterListener(newAgent);
+        try {
+          await setupTwitterListener(newAgent);
+        } catch (error) {
+          console.error(`Failed to start Twitter listener for new agent ${newAgent.id}:`, error);
+        }
+      } else {
+        console.log(`Skipping Twitter listener for agent ${newAgent.id}: Missing or invalid Twitter credentials`);
       }
       res.status(201).json({ _id: result.insertedId, ...newAgent });
     }
   } catch (error) {
-    console.error(error);
+    console.error("Error creating agent:", error);
     res.status(500).json({ error: "Failed to create agent" });
   }
 };
@@ -321,16 +332,39 @@ const chatWithAgent: RequestHandler<ChatParams> = async (req: Request<ChatParams
 
 // Twitter Listener Setup
 async function setupTwitterListeners(db: any) {
-  const agents = await db.collection("agents").find({
-    twitterHandle: { $exists: true, $ne: "" },
-    twitterAppKey: { $exists: true, $ne: "" },
-    twitterAppSecret: { $exists: true, $ne: "" },
-    twitterAccessToken: { $exists: true, $ne: "" },
-    twitterAccessSecret: { $exists: true, $ne: "" },
-    openaiApiKey: { $exists: true, $ne: "" }
-  }).toArray();
+  try {
+    const agents = await db.collection("agents").find({
+      twitterHandle: { $exists: true, $ne: "" },
+      twitterAppKey: { $exists: true, $ne: "" },
+      twitterAppSecret: { $exists: true, $ne: "" },
+      twitterAccessToken: { $exists: true, $ne: "" },
+      twitterAccessSecret: { $exists: true, $ne: "" },
+      openaiApiKey: { $exists: true, $ne: "" }
+    }).toArray();
 
-  agents.forEach((agent: Agent) => setupTwitterListener(agent));
+    agents.forEach((agent: Agent) => {
+      // Additional check for valid string values
+      if (
+        typeof agent.twitterHandle === "string" &&
+        agent.twitterHandle.trim() !== "" &&
+        typeof agent.twitterAppKey === "string" &&
+        agent.twitterAppKey.trim() !== "" &&
+        typeof agent.twitterAppSecret === "string" &&
+        agent.twitterAppSecret.trim() !== "" &&
+        typeof agent.twitterAccessToken === "string" &&
+        agent.twitterAccessToken.trim() !== "" &&
+        typeof agent.twitterAccessSecret === "string" &&
+        agent.twitterAccessSecret.trim() !== ""
+      ) {
+        setupTwitterListener(agent);
+      } else {
+        console.log(`Skipping Twitter listener for agent ${agent.id}: Missing or invalid Twitter credentials`);
+      }
+    });
+  } catch (error) {
+    console.error("Error setting up Twitter listeners:", error);
+    // Log the error but don't crash the server
+  }
 }
 
 async function setupTwitterListener(agent: Agent) {
@@ -363,15 +397,19 @@ async function setupTwitterListener(agent: Agent) {
     });
 
     stream.on('data', async (tweet) => {
-      if (tweet.data.text.includes(`@${agent.twitterHandle}`)) {
-        const response = await openai.chat.completions.create({
-          model: "gpt-3.5-turbo",
-          messages: [{ role: "user", content: tweet.data.text }],
-        });
-        const replyText = `@${tweet.data.author_id} ${response.choices[0].message.content}`.slice(0, 280);
+      try {
+        if (tweet.data.text.includes(`@${agent.twitterHandle}`)) {
+          const response = await openai.chat.completions.create({
+            model: "gpt-3.5-turbo",
+            messages: [{ role: "user", content: tweet.data.text }],
+          });
+          const replyText = `@${tweet.data.author_id} ${response.choices[0].message.content}`.slice(0, 280);
 
-        await twitterClient.v1.tweet(replyText); // Use v1 API for tweeting
-        console.log(`Agent ${agent.id} replied to tweet: ${replyText}`);
+          await twitterClient.v1.tweet(replyText);
+          console.log(`Agent ${agent.id} replied to tweet: ${replyText}`);
+        }
+      } catch (error) {
+        console.error(`Error processing tweet for agent ${agent.id}:`, error);
       }
     });
 
