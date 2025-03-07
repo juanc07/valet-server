@@ -1,0 +1,39 @@
+// new jsondata for creation of agent 
+{
+  "name": "TestAgent",
+  "description": "A test agent",
+  "bio": "Test bio",
+  "mission": "Test mission",
+  "vision": "Test vision",
+  "personality": {
+    "tone": "Friendly",
+    "humor": true,
+    "formality": "Casual",
+    "catchphrase": "Hello world!"
+  },
+  "agentType": "basic",
+  "userId": "user123"
+}
+
+// old way for agent creation
+{
+  "name": "Agent Gaia",
+  "description": "AI assistant",
+  "bio": "I help users",
+  "mission": "Assist",
+  "vision": "Harmony",
+  "contact": {"email": "gaia@example.com", "website": "gaia.com", "socials": {"twitter": "@AgentGaia", "github": "", "linkedin": ""}},
+  "wallets": {"solana": "", "ethereum": "", "bitcoin": ""},
+  "knowledge": {"type": "custom", "data": ["I assist"]},
+  "personality": {"tone": "friendly", "humor": true, "formality": "casual", "catchphrase": "Let’s chat!", "preferences": {"topics": ["tech"], "languages": ["English"]}},
+  "settings": {"max_memory_context": 10, "platforms": ["web"]},
+  "ruleIds": ["rule1"],
+  "openaiApiKey": "sk-your-openai-key",
+  "twitterAppKey": "your-consumer-key",
+  "twitterAppSecret": "your-consumer-secret",
+  "twitterAccessToken": "your-access-token",
+  "twitterAccessSecret": "your-access-secret",
+  "agentType": "basic",
+  "userId": "user123",
+  "twitterHandle": "AgentGaia"
+}

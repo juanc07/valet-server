@@ -7,7 +7,7 @@ export interface User {
     firstName: string;
     lastName: string;
     age: number;
-    country: number;
+    country: string;
     mobileNumber: string;
     twitterHandle: string;
     discordId: string;

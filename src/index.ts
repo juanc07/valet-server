@@ -62,46 +62,114 @@ async function startServer() {
 
 // Agent Route Handlers
 const createAgent: RequestHandler = async (req: Request, res: Response) => {
+  console.log("1st createAgent");
   try {
     const db = await connectToDatabase();
     const agent: Omit<Agent, "id"> & { id?: string } = req.body;
-    if (!agent.userId) {
-      res.status(400).json({ error: "userId is required" });
-    } else {
-      const generatedId = uuidv4();
-      const newAgent: Agent = {
-        ...agent,
-        id: generatedId,
-        isActive: true,
-      };
-      const result = await db.collection("agents").insertOne(newAgent);
-      if (
-        typeof newAgent.twitterHandle === "string" &&
-        newAgent.twitterHandle.trim() !== "" &&
-        typeof newAgent.twitterAppKey === "string" &&
-        newAgent.twitterAppKey.trim() !== "" &&
-        typeof newAgent.twitterAppSecret === "string" &&
-        newAgent.twitterAppSecret.trim() !== "" &&
-        typeof newAgent.twitterAccessToken === "string" &&
-        newAgent.twitterAccessToken.trim() !== "" &&
-        typeof newAgent.twitterAccessSecret === "string" &&
-        newAgent.twitterAccessSecret.trim() !== ""
-      ) {
-        try {
-          await setupTwitterListener(newAgent);
-        } catch (error) {
-          console.error(`Failed to start Twitter listener for new agent ${newAgent.id}:`, error);
-        }
+
+    // Define required fields with expected types
+    const requiredFields = [
+      { key: "name", type: "string" as const },
+      { key: "description", type: "string" as const },
+      { key: "bio", type: "string" as const },
+      { key: "mission", type: "string" as const },
+      { key: "vision", type: "string" as const },
+      { key: "userId", type: "string" as const },
+      { key: "personality.tone", type: "string" as const },
+      { key: "personality.humor", type: "boolean" as const },
+      { key: "personality.formality", type: "string" as const },
+      { key: "personality.catchphrase", type: "string" as const },
+      { key: "agentType", type: "string" as const },
+      { key: "agentType", type: "string" as const },
+    ];
+
+    // Validate required fields
+    const missingFields: string[] = [];
+    const invalidFields: string[] = [];
+
+    for (const field of requiredFields) {
+      const [parent, child] = field.key.split(".");
+      let value: any;
+
+      if (child) {
+        // Nested field (e.g., personality.tone)
+        value = (agent as any)[parent]?.[child];
       } else {
-        console.log(`Skipping Twitter listener for agent ${newAgent.id}: Missing or invalid Twitter credentials`);
+        // Top-level field
+        value = (agent as any)[field.key];
       }
-      res.status(201).json({ _id: result.insertedId, ...newAgent });
+
+      // Check if field is missing or empty
+      if (value === undefined || value === null || (typeof value === "string" && value.trim() === "")) {
+        missingFields.push(field.key);
+      } else if (typeof value !== field.type) {
+        // Validate type
+        invalidFields.push(`${field.key} must be a ${field.type}`);
+      }
     }
+
+    // Validate agentType specifically
+    if (agent.agentType && !["basic", "puppetos", "thirdparty"].includes(agent.agentType)) {
+      invalidFields.push("agentType must be 'basic', 'puppetos', or 'thirdparty'");
+    }
+
+    if (missingFields.length > 0 || invalidFields.length > 0) {
+      const errorMessage = [
+        missingFields.length > 0 ? `Missing required fields: ${missingFields.join(", ")}` : "",
+        invalidFields.length > 0 ? `Invalid fields: ${invalidFields.join(", ")}` : "",
+      ]
+        .filter(Boolean)
+        .join("; ");
+      res.status(400).json({ error: errorMessage });
+      return; // No explicit return of Response, just return void
+    }
+
+    console.log("2nd createAgent no missing fields");
+
+    const generatedId = uuidv4();
+    const newAgent: Agent = {
+      ...agent,
+      id: generatedId,
+      isActive: true,
+    };
+
+    const result = await db.collection("agents").insertOne(newAgent);
+
+    console.log("3rd createAgent created");
+
+    // Twitter listener setup
+    if (
+      typeof newAgent.twitterHandle === "string" &&
+      newAgent.twitterHandle.trim() !== "" &&
+      typeof newAgent.twitterAppKey === "string" &&
+      newAgent.twitterAppKey.trim() !== "" &&
+      typeof newAgent.twitterAppSecret === "string" &&
+      newAgent.twitterAppSecret.trim() !== "" &&
+      typeof newAgent.twitterAccessToken === "string" &&
+      newAgent.twitterAccessToken.trim() !== "" &&
+      typeof newAgent.twitterAccessSecret === "string" &&
+      newAgent.twitterAccessSecret.trim() !== ""
+    ) {
+      try {
+        await setupTwitterListener(newAgent);
+        console.log("4th createAgent twitter listener setup");
+      } catch (error) {
+        console.error(`Failed to start Twitter listener for new agent ${newAgent.id}:`, error);
+        console.log("5th createAgent twitter listener failed");
+      }
+    } else {
+      console.log(`Skipping Twitter listener for agent ${newAgent.id}: Missing or invalid Twitter credentials`);
+      console.log("6th createAgent twitter listener skipped");
+    }
+
+    console.log("7th createAgent resnpose call!");
+    res.status(201).json({ _id: result.insertedId, ...newAgent });
   } catch (error) {
     console.error("Error creating agent:", error);
     res.status(500).json({ error: "Failed to create agent" });
   }
 };
+
 
 const getAllAgents: RequestHandler = async (req: Request, res: Response) => {
   try {
@@ -220,6 +288,28 @@ const getUser: RequestHandler<UserParams> = async (req: Request<UserParams>, res
   }
 };
 
+const getUserByWallet: RequestHandler<{ solanaWalletAddress: string }> = async (
+  req: Request<{ solanaWalletAddress: string }>,
+  res: Response
+) => {
+  console.log("1st getUserByWallet");
+  try {
+    const db = await connectToDatabase();
+    const { solanaWalletAddress } = req.params;
+    console.log("getUserByWallet solanaWalletAddress: ", solanaWalletAddress);
+    const user = await db.collection("users").findOne({ solanaWalletAddress });
+    console.log("getUserByWallet found user: ", user);
+    if (!user) {
+      res.status(404).json({ error: "User not found" });
+    } else {
+      res.status(200).json(user);
+    }
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Failed to fetch user" });
+  }
+};
+
 const getAllUsers: RequestHandler = async (req: Request, res: Response) => {
   try {
     const db = await connectToDatabase();
@@ -289,6 +379,20 @@ const deleteAllUsers: RequestHandler = async (req: Request, res: Response) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Failed to delete all users" });
+  }
+};
+
+const getAgentCount: RequestHandler = async (req: Request, res: Response) => {
+  try {
+    console.log("1st getAgentCount");
+    const db = await connectToDatabase();
+    const userId = req.params.userId;
+    const count = await db.collection("agents").countDocuments({ userId });
+    console.log("2nd getAgentCount count: ", count);
+    res.status(200).json({ count });
+  } catch (error) {
+    console.error("Error fetching agent count:", error);
+    res.status(500).json({ error: "Failed to fetch agent count" });
   }
 };
 
@@ -479,7 +583,9 @@ app.delete("/agents", deleteAllAgents);
 
 app.post("/users", createUser);
 app.get("/users/:userId", getUser);
+app.get("/users/by-wallet/:solanaWalletAddress", getUserByWallet);
 app.get("/users", getAllUsers);
+app.get("/users/:userId/agents/count", getAgentCount);
 app.put("/users/:userId", updateUser);
 app.delete("/users/:userId", deleteUser);
 app.delete("/users", deleteAllUsers);
