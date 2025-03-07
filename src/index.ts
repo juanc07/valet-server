@@ -33,7 +33,7 @@ app.use(cors({
 app.use(express.json());
 
 interface AgentParams {
-  id: string;
+  agentId: string;
 }
 
 interface UserParams {
@@ -79,7 +79,7 @@ const createAgent: RequestHandler = async (req: Request, res: Response) => {
       { key: "personality.humor", type: "boolean" as const },
       { key: "personality.formality", type: "string" as const },
       { key: "personality.catchphrase", type: "string" as const },
-      { key: "agentType", type: "string" as const },      
+      { key: "agentType", type: "string" as const },
     ];
 
     // Validate required fields
@@ -128,7 +128,7 @@ const createAgent: RequestHandler = async (req: Request, res: Response) => {
     const generatedId = uuidv4();
     const newAgent: Agent = {
       ...agent,
-      id: generatedId,
+      agentId: generatedId,
       isActive: true,
     };
 
@@ -153,11 +153,11 @@ const createAgent: RequestHandler = async (req: Request, res: Response) => {
         await setupTwitterListener(newAgent);
         console.log("4th createAgent twitter listener setup");
       } catch (error) {
-        console.error(`Failed to start Twitter listener for new agent ${newAgent.id}:`, error);
+        console.error(`Failed to start Twitter listener for new agent ${newAgent.agentId}:`, error);
         console.log("5th createAgent twitter listener failed");
       }
     } else {
-      console.log(`Skipping Twitter listener for agent ${newAgent.id}: Missing or invalid Twitter credentials`);
+      console.log(`Skipping Twitter listener for agent ${newAgent.agentId}: Missing or invalid Twitter credentials`);
       console.log("6th createAgent twitter listener skipped");
     }
 
@@ -198,23 +198,27 @@ const updateAgent: RequestHandler<AgentParams> = async (
 ) => {
   try {
     const db = await connectToDatabase();
-    const agentId = req.params.id;
+    const agentId:string = req.params.agentId;
     const updatedAgent: Partial<Agent> = req.body;
+
+    // Optional: Validate userId if present
     if ("userId" in updatedAgent && !updatedAgent.userId) {
       res.status(400).json({ error: "userId cannot be empty" });
+      return;
+    }
+
+    const result = await db.collection("agents").updateOne(
+      { agentId: agentId },
+      { $set: updatedAgent }
+    );
+
+    if (result.matchedCount === 0) {
+      res.status(404).json({ error: "Agent not found" });
     } else {
-      const result = await db.collection("agents").updateOne(
-        { id: agentId },
-        { $set: updatedAgent }
-      );
-      if (result.matchedCount === 0) {
-        res.status(404).json({ error: "Agent not found" });
-      } else {
-        res.status(200).json({ message: "Agent updated" });
-      }
+      res.status(200).json({ message: "Agent updated" });
     }
   } catch (error) {
-    console.error(error);
+    console.error("Error updating agent:", error);
     res.status(500).json({ error: "Failed to update agent" });
   }
 };
@@ -225,8 +229,8 @@ const deleteAgent: RequestHandler<AgentParams> = async (
 ) => {
   try {
     const db = await connectToDatabase();
-    const agentId = req.params.id;
-    const result = await db.collection("agents").deleteOne({ id: agentId });
+    const agentId = req.params.agentId;
+    const result = await db.collection("agents").deleteOne({ agentId: agentId });
     if (result.deletedCount === 0) {
       res.status(404).json({ error: "Agent not found" });
     } else {
@@ -320,6 +324,22 @@ const getAllUsers: RequestHandler = async (req: Request, res: Response) => {
   }
 };
 
+const getAgentById: RequestHandler<AgentParams> = async (req: Request<AgentParams>, res: Response) => {
+  try {
+    const db = await connectToDatabase();
+    const agentId = req.params.agentId;
+    const agent = await db.collection("agents").findOne({ agentId: agentId });
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+    } else {
+      res.status(200).json(agent);
+    }
+  } catch (error) {
+    console.error("Error fetching agent by ID:", error);
+    res.status(500).json({ error: "Failed to fetch agent" });
+  }
+};
+
 const updateUser: RequestHandler<UserParams> = async (
   req: Request<UserParams>,
   res: Response
@@ -383,8 +403,8 @@ const deleteAllUsers: RequestHandler = async (req: Request, res: Response) => {
 
 const getAgentCount: RequestHandler = async (req: Request, res: Response) => {
   try {
-    console.log("1st getAgentCount");    
-    const db = await connectToDatabase();    
+    console.log("1st getAgentCount");
+    const db = await connectToDatabase();
     const userId = req.params.userId;
     console.log("getAgentCount userId: ", userId);
     const count = await db.collection("agents").countDocuments({ createdBy: userId });
@@ -408,7 +428,7 @@ const chatWithAgent: RequestHandler<ChatParams> = async (req: Request<ChatParams
       return;
     }
 
-    const agent = await db.collection("agents").findOne({ id: agentId });
+    const agent = await db.collection("agents").findOne({ agentId: agentId });
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
@@ -445,7 +465,7 @@ const chatWithAgentStream: RequestHandler<ChatParams> = async (req: Request<Chat
       return;
     }
 
-    const agent = await db.collection("agents").findOne({ id: agentId });
+    const agent = await db.collection("agents").findOne({ agentId: agentId });
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
@@ -511,7 +531,7 @@ async function setupTwitterListeners(db: any) {
       ) {
         setupTwitterListener(agent);
       } else {
-        console.log(`Skipping Twitter listener for agent ${agent.id}: Missing or invalid Twitter credentials`);
+        console.log(`Skipping Twitter listener for agent ${agent.agentId}: Missing or invalid Twitter credentials`);
       }
     });
   } catch (error) {
@@ -539,7 +559,7 @@ async function setupTwitterListener(agent: Agent) {
     }
 
     await twitterClient.v2.updateStreamRules({
-      add: [{ value: `@${agent.twitterHandle}`, tag: agent.id }],
+      add: [{ value: `@${agent.twitterHandle}`, tag: agent.agentId }],
     });
 
     const stream = await twitterClient.v2.searchStream({
@@ -556,20 +576,20 @@ async function setupTwitterListener(agent: Agent) {
           const replyText = `@${tweet.data.author_id} ${response.choices[0].message.content}`.slice(0, 280);
 
           await twitterClient.v1.tweet(replyText);
-          console.log(`Agent ${agent.id} replied to tweet: ${replyText}`);
+          console.log(`Agent ${agent.agentId} replied to tweet: ${replyText}`);
         }
       } catch (error) {
-        console.error(`Error processing tweet for agent ${agent.id}:`, error);
+        console.error(`Error processing tweet for agent ${agent.agentId}:`, error);
       }
     });
 
     stream.on('error', (error) => {
-      console.error(`Twitter stream error for agent ${agent.id}:`, error);
+      console.error(`Twitter stream error for agent ${agent.agentId}:`, error);
     });
 
     stream.autoReconnect = true;
   } catch (error) {
-    console.error(`Failed to setup Twitter listener for agent ${agent.id}:`, error);
+    console.error(`Failed to setup Twitter listener for agent ${agent.agentId}:`, error);
   }
 }
 
@@ -577,8 +597,9 @@ async function setupTwitterListener(agent: Agent) {
 app.post("/agents", createAgent);
 app.get("/agents", getAllAgents);
 app.get("/agents/active", getActiveAgents);
-app.put("/agents/:id", updateAgent);
-app.delete("/agents/:id", deleteAgent);
+app.get("/agents/:agentId", getAgentById);
+app.put("/agents/:agentId", updateAgent);
+app.delete("/agents/:agentId", deleteAgent);
 app.delete("/agents", deleteAllAgents);
 
 app.post("/users", createUser);

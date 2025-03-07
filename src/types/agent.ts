@@ -1,6 +1,6 @@
 export interface Agent {
   name: string;
-  id: string;
+  agentId: string;  
   description: string;
   bio: string;
   mission: string;
