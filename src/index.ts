@@ -32,8 +32,9 @@ app.use(cors({
       callback(new Error("Not allowed by CORS"));
     }
   },
-  methods: ["GET", "POST", "PUT", "DELETE"],
-  allowedHeaders: ["Content-Type"],
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"], // Add OPTIONS
+  allowedHeaders: ["Content-Type", "Accept"], // Add Accept for SSE
+  credentials: true, // Allow credentials
 }));
 app.use(express.json());
 
