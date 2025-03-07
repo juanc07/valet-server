@@ -260,6 +260,56 @@ const getActiveAgents: RequestHandler = async (req: Request, res: Response) => {
   }
 };
 
+const getAgentsByUserId: RequestHandler<UserParams> = async (
+  req: Request<UserParams>,
+  res: Response
+) => {
+  try {
+    const db = await connectToDatabase();
+    const userId = req.params.userId;
+    const isActive = req.query.isActive ? req.query.isActive === "true" : undefined; // Optional isActive filter
+
+    console.log(`Fetching agents for userId: ${userId}, isActive: ${isActive}`);
+
+    const query: any = { createdBy: userId };
+    if (isActive !== undefined) {
+      query.isActive = isActive;
+    }
+
+    const agents = await db.collection("agents").find(query).toArray();
+
+    console.log(`Found ${agents.length} agents for userId ${userId}`);
+    res.status(200).json(agents);
+  } catch (error) {
+    console.error("Error fetching agents by userId:", error);
+    res.status(500).json({ error: "Failed to fetch agents" });
+  }
+};
+
+const getActiveAgentCount: RequestHandler<UserParams> = async (
+  req: Request<UserParams>,
+  res: Response
+) => {
+  try {
+    const db = await connectToDatabase();
+    const userId = req.params.userId;
+    const isActive = req.query.isActive === "true"; // Parse isActive query param as boolean
+
+    console.log(`Fetching active agent count for userId: ${userId}, isActive: ${isActive}`);
+
+    const count = await db.collection("agents").countDocuments({
+      createdBy: userId,
+      isActive: isActive,
+    });
+
+    console.log(`Active agent count for userId ${userId}: ${count}`);
+    res.status(200).json({ count });
+  } catch (error) {
+    console.error("Error fetching active agent count:", error);
+    res.status(500).json({ error: "Failed to fetch active agent count" });
+  }
+};
+
 const updateAgent: RequestHandler<AgentParams> = async (
   req: Request<AgentParams>,
   res: Response
@@ -423,11 +473,11 @@ const getUserByWallet: RequestHandler<{ solanaWalletAddress: string }> = async (
     console.log("getUserByWallet solanaWalletAddress: ", solanaWalletAddress);
     const user = await db.collection("users").findOne({ solanaWalletAddress });
     console.log("getUserByWallet found user: ", user);
-    if (!user) {
-      res.status(404).json({ error: "User not found" });
-    } else {
-      res.status(200).json(user);
-    }
+
+    // Return 200 with user or null to indicate not found
+    res.status(200).json({
+      user: user || null, // Null if no user found
+    });
   } catch (error) {
     console.error("Error fetching user by wallet:", error);
     res.status(500).json({ error: "Failed to fetch user" });
@@ -555,7 +605,6 @@ const chatWithAgent: RequestHandler<ChatParams> = async (req: Request<ChatParams
       return;
     }
 
-    // Check if openaiApiKey is missing, empty, or blank
     if (!agent.openaiApiKey || agent.openaiApiKey.trim() === "") {
       res.status(400).json({ agentId, reply: "API key is required to process your request." });
       return;
@@ -593,7 +642,6 @@ const chatWithAgentStream: RequestHandler<ChatParams> = async (req: Request<Chat
       return;
     }
 
-    // Check if openaiApiKey is missing, empty, or blank
     if (!agent.openaiApiKey || agent.openaiApiKey.trim() === "") {
       res.setHeader("Content-Type", "text/event-stream");
       res.setHeader("Cache-Control", "no-cache");
@@ -734,7 +782,9 @@ app.post("/users", createUser);
 app.get("/users/:userId", getUser);
 app.get("/users/by-wallet/:solanaWalletAddress", getUserByWallet);
 app.get("/users", getAllUsers);
+app.get("/users/:userId/agents", getAgentsByUserId); // New endpoint
 app.get("/users/:userId/agents/count", getAgentCount);
+app.get("/users/:userId/agents/active/count", getActiveAgentCount);
 app.put("/users/:userId", updateUser);
 app.delete("/users/:userId", deleteUser);
 app.delete("/users", deleteAllUsers);
