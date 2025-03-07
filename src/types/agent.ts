@@ -46,5 +46,5 @@ export interface Agent {
   twitterAccessSecret?: string;
   twitterHandle?: string;
   agentType: "basic" | "puppetos" | "thirdparty";
-  userId: string;  
+  createdBy: string;
 }

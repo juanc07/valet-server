@@ -386,8 +386,8 @@ const getAgentCount: RequestHandler = async (req: Request, res: Response) => {
   try {
     console.log("1st getAgentCount");
     const db = await connectToDatabase();
-    const userId = req.params.userId;
-    const count = await db.collection("agents").countDocuments({ userId });
+    const createdBy = req.params.createdBy;
+    const count = await db.collection("agents").countDocuments({ createdBy });
     console.log("2nd getAgentCount count: ", count);
     res.status(200).json({ count });
   } catch (error) {
