@@ -2,7 +2,7 @@ import express, { Request, Response, Express, RequestHandler } from "express";
 import dotenv from "dotenv";
 import cors from "cors";
 import { v4 as uuidv4 } from "uuid";
-import { TwitterApi, TwitterApiTokens } from "twitter-api-v2";
+import { TwitterApi, TwitterApiTokens, TweetStream } from "twitter-api-v2";
 import OpenAI from "openai";
 import { connectToDatabase } from "./db";
 import { Agent } from "./types/agent";
@@ -12,6 +12,11 @@ dotenv.config();
 
 const app: Express = express();
 const port = process.env.PORT || 3000;
+
+// Map to track active Twitter streams
+const twitterStreams = new Map<string, TweetStream>();
+// Map to track posting intervals
+const postingIntervals = new Map<string, NodeJS.Timeout>();
 
 app.use(cors({
   origin: (origin, callback) => {
@@ -47,16 +52,101 @@ interface ChatParams {
 async function startServer() {
   try {
     const db = await connectToDatabase();
-
-    // Start Twitter listeners for all valid agents
     await setupTwitterListeners(db);
-
     app.listen(port, () => {
       console.log(`Server running on port ${port}`);
     });
   } catch (err) {
     console.error("Failed to start server:", err);
     process.exit(1);
+  }
+}
+
+// Helper function to check if agent has valid Twitter credentials
+function hasValidTwitterCredentials(agent: Agent): boolean {
+  return (
+    typeof agent.twitterHandle === "string" && agent.twitterHandle.trim() !== "" &&
+    typeof agent.twitterAppKey === "string" && agent.twitterAppKey.trim() !== "" &&
+    typeof agent.twitterAppSecret === "string" && agent.twitterAppSecret.trim() !== "" &&
+    typeof agent.twitterAccessToken === "string" && agent.twitterAccessToken.trim() !== "" &&
+    typeof agent.twitterAccessSecret === "string" && agent.twitterAccessSecret.trim() !== ""
+  );
+}
+
+// Helper function to stop Twitter listener
+async function stopTwitterListener(agentId: string) {
+  try {
+    const stream = twitterStreams.get(agentId);
+    if (stream) {
+      stream.destroy();
+      twitterStreams.delete(agentId);
+      console.log(`Twitter listener stopped for agent ${agentId}`);
+    }
+  } catch (error) {
+    console.error(`Error stopping Twitter listener for agent ${agentId}:`, error);
+  }
+}
+
+// Helper function to stop posting interval
+function stopPostingInterval(agentId: string) {
+  try {
+    const interval = postingIntervals.get(agentId);
+    if (interval) {
+      clearInterval(interval);
+      postingIntervals.delete(agentId);
+      console.log(`Posting interval stopped for agent ${agentId}`);
+    }
+  } catch (error) {
+    console.error(`Error stopping posting interval for agent ${agentId}:`, error);
+  }
+}
+
+// Helper function to post random tweet
+async function postRandomTweet(agent: Agent) {
+  if (!hasValidTwitterCredentials(agent)) {
+    console.log(`Cannot post tweet for agent ${agent.agentId}: Invalid Twitter credentials`);
+    return;
+  }
+
+  const twitterTokens: TwitterApiTokens = {
+    appKey: agent.twitterAppKey!,
+    appSecret: agent.twitterAppSecret!,
+    accessToken: agent.twitterAccessToken!,
+    accessSecret: agent.twitterAccessSecret!,
+  };
+
+  const twitterClient = new TwitterApi(twitterTokens);
+
+  const randomMessages = [
+    `Hello from ${agent.name}! Just a basic agent checking in.`,
+    `${agent.name} here: What's happening on X today?`,
+    `Agent ${agent.name} says: ${agent.personality.catchphrase}`,
+  ];
+  const randomMessage = randomMessages[Math.floor(Math.random() * randomMessages.length)];
+
+  try {
+    await twitterClient.v1.tweet(randomMessage);
+    console.log(`Agent ${agent.agentId} posted: ${randomMessage}`);
+  } catch (error) {
+    console.error(`Failed to post tweet for agent ${agent.agentId}:`, error);
+  }
+}
+
+// Helper function to start posting interval
+function startPostingInterval(agent: Agent) {
+  if (!hasValidTwitterCredentials(agent)) {
+    console.log(`Cannot start posting interval for agent ${agent.agentId}: Invalid Twitter credentials`);
+    return;
+  }
+
+  try {
+    stopPostingInterval(agent.agentId); // Clear any existing interval
+    const intervalSeconds = agent.postTweetInterval ?? 3600; // Default to 1 hour if not set
+    const interval = setInterval(() => postRandomTweet(agent), intervalSeconds * 1000); // Convert to milliseconds
+    postingIntervals.set(agent.agentId, interval);
+    console.log(`Started posting interval for agent ${agent.agentId} every ${intervalSeconds} seconds`);
+  } catch (error) {
+    console.error(`Error starting posting interval for agent ${agent.agentId}:`, error);
   }
 }
 
@@ -67,7 +157,6 @@ const createAgent: RequestHandler = async (req: Request, res: Response) => {
     const db = await connectToDatabase();
     const agent: Omit<Agent, "id"> & { id?: string } = req.body;
 
-    // Define required fields with expected types
     const requiredFields = [
       { key: "name", type: "string" as const },
       { key: "description", type: "string" as const },
@@ -82,7 +171,6 @@ const createAgent: RequestHandler = async (req: Request, res: Response) => {
       { key: "agentType", type: "string" as const },
     ];
 
-    // Validate required fields
     const missingFields: string[] = [];
     const invalidFields: string[] = [];
 
@@ -91,23 +179,18 @@ const createAgent: RequestHandler = async (req: Request, res: Response) => {
       let value: any;
 
       if (child) {
-        // Nested field (e.g., personality.tone)
         value = (agent as any)[parent]?.[child];
       } else {
-        // Top-level field
         value = (agent as any)[field.key];
       }
 
-      // Check if field is missing or empty
       if (value === undefined || value === null || (typeof value === "string" && value.trim() === "")) {
         missingFields.push(field.key);
       } else if (typeof value !== field.type) {
-        // Validate type
         invalidFields.push(`${field.key} must be a ${field.type}`);
       }
     }
 
-    // Validate agentType specifically
     if (agent.agentType && !["basic", "puppetos", "thirdparty"].includes(agent.agentType)) {
       invalidFields.push("agentType must be 'basic', 'puppetos', or 'thirdparty'");
     }
@@ -120,7 +203,7 @@ const createAgent: RequestHandler = async (req: Request, res: Response) => {
         .filter(Boolean)
         .join("; ");
       res.status(400).json({ error: errorMessage });
-      return; // No explicit return of Response, just return void
+      return;
     }
 
     console.log("2nd createAgent no missing fields");
@@ -136,32 +219,18 @@ const createAgent: RequestHandler = async (req: Request, res: Response) => {
 
     console.log("3rd createAgent created");
 
-    // Twitter listener setup
-    if (
-      typeof newAgent.twitterHandle === "string" &&
-      newAgent.twitterHandle.trim() !== "" &&
-      typeof newAgent.twitterAppKey === "string" &&
-      newAgent.twitterAppKey.trim() !== "" &&
-      typeof newAgent.twitterAppSecret === "string" &&
-      newAgent.twitterAppSecret.trim() !== "" &&
-      typeof newAgent.twitterAccessToken === "string" &&
-      newAgent.twitterAccessToken.trim() !== "" &&
-      typeof newAgent.twitterAccessSecret === "string" &&
-      newAgent.twitterAccessSecret.trim() !== ""
-    ) {
-      try {
-        await setupTwitterListener(newAgent);
-        console.log("4th createAgent twitter listener setup");
-      } catch (error) {
-        console.error(`Failed to start Twitter listener for new agent ${newAgent.agentId}:`, error);
-        console.log("5th createAgent twitter listener failed");
+    if (newAgent.isActive && hasValidTwitterCredentials(newAgent)) {
+      await setupTwitterListener(newAgent);
+      console.log("4th createAgent twitter listener setup");
+
+      if (newAgent.enablePostTweet === true && newAgent.agentType === "basic") {
+        startPostingInterval(newAgent);
       }
     } else {
-      console.log(`Skipping Twitter listener for agent ${newAgent.agentId}: Missing or invalid Twitter credentials`);
-      console.log("6th createAgent twitter listener skipped");
+      console.log(`Skipping Twitter features for agent ${newAgent.agentId}: Missing or invalid Twitter credentials or not active`);
     }
 
-    console.log("7th createAgent resnpose call!");
+    console.log("7th createAgent response call!");
     res.status(201).json({ _id: result.insertedId, ...newAgent });
   } catch (error) {
     console.error("Error creating agent:", error);
@@ -169,14 +238,13 @@ const createAgent: RequestHandler = async (req: Request, res: Response) => {
   }
 };
 
-
 const getAllAgents: RequestHandler = async (req: Request, res: Response) => {
   try {
     const db = await connectToDatabase();
     const agents = await db.collection("agents").find().toArray();
     res.status(200).json(agents);
   } catch (error) {
-    console.error(error);
+    console.error("Error fetching all agents:", error);
     res.status(500).json({ error: "Failed to fetch agents" });
   }
 };
@@ -187,7 +255,7 @@ const getActiveAgents: RequestHandler = async (req: Request, res: Response) => {
     const agents = await db.collection("agents").find({ isActive: true }).toArray();
     res.status(200).json(agents);
   } catch (error) {
-    console.error(error);
+    console.error("Error fetching active agents:", error);
     res.status(500).json({ error: "Failed to fetch active agents" });
   }
 };
@@ -198,12 +266,12 @@ const updateAgent: RequestHandler<AgentParams> = async (
 ) => {
   try {
     const db = await connectToDatabase();
-    const agentId:string = req.params.agentId;
+    const agentId: string = req.params.agentId;
     const updatedAgent: Partial<Agent> = req.body;
 
-    // Optional: Validate userId if present
-    if ("userId" in updatedAgent && !updatedAgent.userId) {
-      res.status(400).json({ error: "userId cannot be empty" });
+    const currentAgent = await db.collection("agents").findOne({ agentId }) as Agent | null;
+    if (!currentAgent) {
+      res.status(404).json({ error: "Agent not found" });
       return;
     }
 
@@ -214,9 +282,50 @@ const updateAgent: RequestHandler<AgentParams> = async (
 
     if (result.matchedCount === 0) {
       res.status(404).json({ error: "Agent not found" });
-    } else {
-      res.status(200).json({ message: "Agent updated" });
+      return;
     }
+
+    const newAgentData = await db.collection("agents").findOne({ agentId }) as Agent | null;
+    if (!newAgentData) {
+      res.status(500).json({ error: "Failed to retrieve updated agent" });
+      return;
+    }
+
+    const wasActive = currentAgent.isActive ?? false;
+    const isActiveNow = newAgentData.isActive ?? wasActive;
+    const hadCredentials = hasValidTwitterCredentials(currentAgent);
+    const hasCredentialsNow = hasValidTwitterCredentials(newAgentData);
+    const wasPostingEnabled = currentAgent.enablePostTweet ?? false;
+    const isPostingEnabledNow = newAgentData.enablePostTweet ?? wasPostingEnabled;
+    const wasBasic = currentAgent.agentType === "basic";
+    const isBasicNow = newAgentData.agentType === "basic";
+
+    // Twitter listener logic
+    if (!hasCredentialsNow) {
+      await stopTwitterListener(agentId);
+      stopPostingInterval(agentId);
+    } else if (wasActive && !isActiveNow) {
+      await stopTwitterListener(agentId);
+      stopPostingInterval(agentId);
+    } else if (!wasActive && isActiveNow) {
+      await setupTwitterListener(newAgentData);
+    } else if (isActiveNow && !hadCredentials && hasCredentialsNow) {
+      await stopTwitterListener(agentId);
+      await setupTwitterListener(newAgentData);
+    }
+
+    // Posting interval logic
+    if (!hasCredentialsNow) {
+      stopPostingInterval(agentId);
+    } else if (isActiveNow && isBasicNow && isPostingEnabledNow) {
+      if (!wasPostingEnabled || (!hadCredentials && hasCredentialsNow) || (!wasBasic && isBasicNow)) {
+        startPostingInterval(newAgentData);
+      }
+    } else if (wasPostingEnabled && (wasActive || wasBasic || wasPostingEnabled)) {
+      stopPostingInterval(agentId);
+    }
+
+    res.status(200).json({ message: "Agent updated" });
   } catch (error) {
     console.error("Error updating agent:", error);
     res.status(500).json({ error: "Failed to update agent" });
@@ -230,6 +339,10 @@ const deleteAgent: RequestHandler<AgentParams> = async (
   try {
     const db = await connectToDatabase();
     const agentId = req.params.agentId;
+
+    await stopTwitterListener(agentId);
+    stopPostingInterval(agentId);
+
     const result = await db.collection("agents").deleteOne({ agentId: agentId });
     if (result.deletedCount === 0) {
       res.status(404).json({ error: "Agent not found" });
@@ -237,7 +350,7 @@ const deleteAgent: RequestHandler<AgentParams> = async (
       res.status(200).json({ message: "Agent deleted" });
     }
   } catch (error) {
-    console.error(error);
+    console.error("Error deleting agent:", error);
     res.status(500).json({ error: "Failed to delete agent" });
   }
 };
@@ -245,10 +358,18 @@ const deleteAgent: RequestHandler<AgentParams> = async (
 const deleteAllAgents: RequestHandler = async (req: Request, res: Response) => {
   try {
     const db = await connectToDatabase();
+
+    for (const agentId of twitterStreams.keys()) {
+      await stopTwitterListener(agentId);
+    }
+    for (const agentId of postingIntervals.keys()) {
+      stopPostingInterval(agentId);
+    }
+
     await db.collection("agents").deleteMany({});
     res.status(200).json({ message: "All agents deleted" });
   } catch (error) {
-    console.error(error);
+    console.error("Error deleting all agents:", error);
     res.status(500).json({ error: "Failed to delete all agents" });
   }
 };
@@ -270,7 +391,7 @@ const createUser: RequestHandler = async (req: Request, res: Response) => {
       res.status(201).json({ _id: result.insertedId, ...newUser });
     }
   } catch (error) {
-    console.error(error);
+    console.error("Error creating user:", error);
     res.status(500).json({ error: "Failed to create user" });
   }
 };
@@ -286,7 +407,7 @@ const getUser: RequestHandler<UserParams> = async (req: Request<UserParams>, res
       res.status(200).json(user);
     }
   } catch (error) {
-    console.error(error);
+    console.error("Error fetching user:", error);
     res.status(500).json({ error: "Failed to fetch user" });
   }
 };
@@ -308,7 +429,7 @@ const getUserByWallet: RequestHandler<{ solanaWalletAddress: string }> = async (
       res.status(200).json(user);
     }
   } catch (error) {
-    console.error(error);
+    console.error("Error fetching user by wallet:", error);
     res.status(500).json({ error: "Failed to fetch user" });
   }
 };
@@ -319,7 +440,7 @@ const getAllUsers: RequestHandler = async (req: Request, res: Response) => {
     const users = await db.collection("users").find().toArray();
     res.status(200).json(users);
   } catch (error) {
-    console.error(error);
+    console.error("Error fetching all users:", error);
     res.status(500).json({ error: "Failed to fetch users" });
   }
 };
@@ -366,7 +487,7 @@ const updateUser: RequestHandler<UserParams> = async (
       }
     }
   } catch (error) {
-    console.error(error);
+    console.error("Error updating user:", error);
     res.status(500).json({ error: "Failed to update user" });
   }
 };
@@ -385,7 +506,7 @@ const deleteUser: RequestHandler<UserParams> = async (
       res.status(200).json({ message: "User deleted" });
     }
   } catch (error) {
-    console.error(error);
+    console.error("Error deleting user:", error);
     res.status(500).json({ error: "Failed to delete user" });
   }
 };
@@ -396,7 +517,7 @@ const deleteAllUsers: RequestHandler = async (req: Request, res: Response) => {
     await db.collection("users").deleteMany({});
     res.status(200).json({ message: "All users deleted" });
   } catch (error) {
-    console.error(error);
+    console.error("Error deleting all users:", error);
     res.status(500).json({ error: "Failed to delete all users" });
   }
 };
@@ -478,7 +599,6 @@ const chatWithAgentStream: RequestHandler<ChatParams> = async (req: Request<Chat
 
     const openai = new OpenAI({ apiKey: agent.openaiApiKey });
 
-    // Set headers for streaming
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
@@ -508,6 +628,7 @@ const chatWithAgentStream: RequestHandler<ChatParams> = async (req: Request<Chat
 async function setupTwitterListeners(db: any) {
   try {
     const agents = await db.collection("agents").find({
+      isActive: true,
       twitterHandle: { $exists: true, $ne: "" },
       twitterAppKey: { $exists: true, $ne: "" },
       twitterAppSecret: { $exists: true, $ne: "" },
@@ -516,30 +637,27 @@ async function setupTwitterListeners(db: any) {
       openaiApiKey: { $exists: true, $ne: "" }
     }).toArray();
 
-    agents.forEach((agent: Agent) => {
-      if (
-        typeof agent.twitterHandle === "string" &&
-        agent.twitterHandle.trim() !== "" &&
-        typeof agent.twitterAppKey === "string" &&
-        agent.twitterAppKey.trim() !== "" &&
-        typeof agent.twitterAppSecret === "string" &&
-        agent.twitterAppSecret.trim() !== "" &&
-        typeof agent.twitterAccessToken === "string" &&
-        agent.twitterAccessToken.trim() !== "" &&
-        typeof agent.twitterAccessSecret === "string" &&
-        agent.twitterAccessSecret.trim() !== ""
-      ) {
-        setupTwitterListener(agent);
+    for (const agent of agents) {
+      if (hasValidTwitterCredentials(agent)) {
+        await setupTwitterListener(agent);
+        if (agent.enablePostTweet === true && agent.agentType === "basic") {
+          startPostingInterval(agent);
+        }
       } else {
-        console.log(`Skipping Twitter listener for agent ${agent.agentId}: Missing or invalid Twitter credentials`);
+        console.log(`Skipping Twitter features for agent ${agent.agentId}: Missing or invalid Twitter credentials`);
       }
-    });
+    }
   } catch (error) {
     console.error("Error setting up Twitter listeners:", error);
   }
 }
 
 async function setupTwitterListener(agent: Agent) {
+  if (!hasValidTwitterCredentials(agent)) {
+    console.log(`Cannot setup Twitter listener for agent ${agent.agentId}: Invalid Twitter credentials`);
+    return;
+  }
+
   const twitterTokens: TwitterApiTokens = {
     appKey: agent.twitterAppKey!,
     appSecret: agent.twitterAppSecret!,
@@ -566,6 +684,8 @@ async function setupTwitterListener(agent: Agent) {
       "tweet.fields": ["author_id", "text", "in_reply_to_user_id"],
     });
 
+    twitterStreams.set(agent.agentId, stream);
+
     stream.on('data', async (tweet) => {
       try {
         if (tweet.data.text.includes(`@${agent.twitterHandle}`)) {
@@ -588,6 +708,7 @@ async function setupTwitterListener(agent: Agent) {
     });
 
     stream.autoReconnect = true;
+    console.log(`Twitter listener started for agent ${agent.agentId}`);
   } catch (error) {
     console.error(`Failed to setup Twitter listener for agent ${agent.agentId}:`, error);
   }

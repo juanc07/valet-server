@@ -45,6 +45,8 @@ export interface Agent {
   twitterAccessToken?: string;
   twitterAccessSecret?: string;
   twitterHandle?: string;
+  enablePostTweet?: boolean;
+  postTweetInterval?: number;
   agentType: "basic" | "puppetos" | "thirdparty";
   createdBy: string;
 }
