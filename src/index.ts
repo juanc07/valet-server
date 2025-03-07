@@ -383,10 +383,11 @@ const deleteAllUsers: RequestHandler = async (req: Request, res: Response) => {
 
 const getAgentCount: RequestHandler = async (req: Request, res: Response) => {
   try {
-    console.log("1st getAgentCount");
-    const db = await connectToDatabase();
-    const createdBy = req.params.createdBy;
-    const count = await db.collection("agents").countDocuments({ createdBy });
+    console.log("1st getAgentCount");    
+    const db = await connectToDatabase();    
+    const userId = req.params.userId;
+    console.log("getAgentCount userId: ", userId);
+    const count = await db.collection("agents").countDocuments({ createdBy: userId });
     console.log("2nd getAgentCount count: ", count);
     res.status(200).json({ count });
   } catch (error) {
