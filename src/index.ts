@@ -74,13 +74,12 @@ const createAgent: RequestHandler = async (req: Request, res: Response) => {
       { key: "bio", type: "string" as const },
       { key: "mission", type: "string" as const },
       { key: "vision", type: "string" as const },
-      { key: "userId", type: "string" as const },
+      { key: "createdBy", type: "string" as const },
       { key: "personality.tone", type: "string" as const },
       { key: "personality.humor", type: "boolean" as const },
       { key: "personality.formality", type: "string" as const },
       { key: "personality.catchphrase", type: "string" as const },
-      { key: "agentType", type: "string" as const },
-      { key: "agentType", type: "string" as const },
+      { key: "agentType", type: "string" as const },      
     ];
 
     // Validate required fields
