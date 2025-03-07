@@ -555,8 +555,9 @@ const chatWithAgent: RequestHandler<ChatParams> = async (req: Request<ChatParams
       return;
     }
 
-    if (!agent.openaiApiKey) {
-      res.status(400).json({ error: "Agent lacks OpenAI API key" });
+    // Check if openaiApiKey is missing, empty, or blank
+    if (!agent.openaiApiKey || agent.openaiApiKey.trim() === "") {
+      res.status(400).json({ agentId, reply: "API key is required to process your request." });
       return;
     }
 
@@ -592,8 +593,14 @@ const chatWithAgentStream: RequestHandler<ChatParams> = async (req: Request<Chat
       return;
     }
 
-    if (!agent.openaiApiKey) {
-      res.status(400).json({ error: "Agent lacks OpenAI API key" });
+    // Check if openaiApiKey is missing, empty, or blank
+    if (!agent.openaiApiKey || agent.openaiApiKey.trim() === "") {
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
+      res.write(`data: ${JSON.stringify({ agentId, content: "API key is required to process your request." })}\n\n`);
+      res.write("data: [DONE]\n\n");
+      res.end();
       return;
     }
 
