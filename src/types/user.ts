@@ -7,6 +7,7 @@ export interface User {
     firstName: string;
     lastName: string;
     age: number;
+    birthdate: string;
     country: string;
     mobileNumber: string;
     twitterHandle: string;
