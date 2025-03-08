@@ -8,11 +8,18 @@ import { connectToDatabase } from "./db";
 import { Agent } from "./types/agent";
 import { User } from "./types/user";
 import { AgentPromptGenerator } from "./agentPromptGenerator";
+import { Connection, PublicKey, SystemProgram, LAMPORTS_PER_SOL } from "@solana/web3.js";
 
 dotenv.config();
 
 const app: Express = express();
 const port = process.env.PORT || 3000;
+const solanaPaymentWallet = process.env.SOLANA_PAYMENT_WALLET || "";
+const solanaEndPoint = process.env.SOLANA_ENDPOINT || "https://api.devnet.solana.com"; // Use Devnet for testing
+
+// Constants for SOL payment
+const RECEIVER_PUBLIC_KEY = new PublicKey(solanaPaymentWallet); // Your app’s wallet
+const SOL_AMOUNT = 0.01 * LAMPORTS_PER_SOL; // 0.01 SOL in lamports
 
 // Map to track active Twitter streams
 const twitterStreams = new Map<string, TweetStream>();
@@ -33,9 +40,9 @@ app.use(cors({
       callback(new Error("Not allowed by CORS"));
     }
   },
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"], // Add OPTIONS
-  allowedHeaders: ["Content-Type", "Accept"], // Add Accept for SSE
-  credentials: true, // Allow credentials
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Accept"],
+  credentials: true,
 }));
 app.use(express.json());
 
@@ -157,7 +164,11 @@ const createAgent: RequestHandler = async (req: Request, res: Response) => {
   console.log("1st createAgent");
   try {
     const db = await connectToDatabase();
-    const agent: Omit<Agent, "id"> & { id?: string } = req.body;
+    const { txSignature, ...agentData }: { txSignature: string } & Omit<Agent, "id" | "agentId" | "isActive"> = req.body;
+    const agent: Omit<Agent, "id" | "agentId" | "isActive"> & { id?: string } = agentData;
+
+    console.log("txSignature: ",txSignature);
+    console.log("agent: ",agent);
 
     const requiredFields = [
       { key: "name", type: "string" as const },
@@ -197,6 +208,10 @@ const createAgent: RequestHandler = async (req: Request, res: Response) => {
       invalidFields.push("agentType must be 'basic', 'puppetos', or 'thirdparty'");
     }
 
+    if (!txSignature || typeof txSignature !== "string" || txSignature.trim() === "") {
+      missingFields.push("txSignature");
+    }
+
     if (missingFields.length > 0 || invalidFields.length > 0) {
       const errorMessage = [
         missingFields.length > 0 ? `Missing required fields: ${missingFields.join(", ")}` : "",
@@ -208,8 +223,38 @@ const createAgent: RequestHandler = async (req: Request, res: Response) => {
       return;
     }
 
-    console.log("2nd createAgent no missing fields");
+    // Step 1: Fetch user’s Solana wallet address from DB using createdBy (userId)
+    const user = await db.collection("users").findOne({ userId: agent.createdBy }) as User | null;
+    if (!user || !user.solanaWalletAddress) {
+      res.status(400).json({ error: "User not found or no Solana wallet address associated" });
+      return;
+    }
+    const senderPublicKey = new PublicKey(user.solanaWalletAddress);
 
+    // Step 2: Verify SOL payment
+    const connection = new Connection(solanaEndPoint, "confirmed");
+    const transaction = await connection.getParsedTransaction(txSignature, "confirmed");
+
+    if (!transaction) {
+      res.status(400).json({ error: "Invalid or unconfirmed transaction" });
+      return;
+    }
+
+    const transferInstruction = transaction.transaction.message.instructions.find(
+      (ix: any) =>
+        ix.programId.toString() === SystemProgram.programId.toString() &&
+        ix.parsed?.type === "transfer" &&
+        ix.parsed.info.source === senderPublicKey.toString() &&
+        ix.parsed.info.destination === RECEIVER_PUBLIC_KEY.toString() &&
+        ix.parsed.info.lamports === SOL_AMOUNT
+    );
+
+    if (!transferInstruction) {
+      res.status(400).json({ error: "Transaction does not contain valid SOL transfer of 0.01 SOL" });
+      return;
+    }
+
+    // Step 3: Create agent
     const generatedId = uuidv4();
     const newAgent: Agent = {
       ...agent,
@@ -219,12 +264,8 @@ const createAgent: RequestHandler = async (req: Request, res: Response) => {
 
     const result = await db.collection("agents").insertOne(newAgent);
 
-    console.log("3rd createAgent created");
-
     if (newAgent.isActive && hasValidTwitterCredentials(newAgent)) {
       await setupTwitterListener(newAgent);
-      console.log("4th createAgent twitter listener setup");
-
       if (newAgent.enablePostTweet === true && newAgent.agentType === "basic") {
         startPostingInterval(newAgent);
       }
@@ -232,7 +273,6 @@ const createAgent: RequestHandler = async (req: Request, res: Response) => {
       console.log(`Skipping Twitter features for agent ${newAgent.agentId}: Missing or invalid Twitter credentials or not active`);
     }
 
-    console.log("7th createAgent response call!");
     res.status(201).json({ _id: result.insertedId, ...newAgent });
   } catch (error) {
     console.error("Error creating agent:", error);
@@ -807,7 +847,7 @@ app.post("/users", createUser);
 app.get("/users/:userId", getUser);
 app.get("/users/by-wallet/:solanaWalletAddress", getUserByWallet);
 app.get("/users", getAllUsers);
-app.get("/users/:userId/agents", getAgentsByUserId); // New endpoint
+app.get("/users/:userId/agents", getAgentsByUserId);
 app.get("/users/:userId/agents/count", getAgentCount);
 app.get("/users/:userId/agents/active/count", getActiveAgentCount);
 app.put("/users/:userId", updateUser);
