@@ -607,6 +607,12 @@ const chatWithAgent: RequestHandler<ChatParams> = async (req: Request<ChatParams
       return;
     }
 
+    // Check if agent is inactive
+    if (agent.isActive === false) {
+      res.status(403).json({ agentId, reply: "Sorry, this agent is currently inactive." });
+      return;
+    }
+
     if (!agent.openaiApiKey || agent.openaiApiKey.trim() === "") {
       res.status(400).json({ agentId, reply: "API key is required to process your request." });
       return;
@@ -644,6 +650,17 @@ const chatWithAgentStream: RequestHandler<ChatParams> = async (req: Request<Chat
     const agent = await db.collection("agents").findOne({ agentId: agentId }) as Agent | null;
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+
+    // Check if agent is inactive
+    if (agent.isActive === false) {
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
+      res.write(`data: ${JSON.stringify({ agentId, content: "Sorry, this agent is currently inactive." })}\n\n`);
+      res.write("data: [DONE]\n\n");
+      res.end();
       return;
     }
 
