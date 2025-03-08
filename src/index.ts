@@ -7,6 +7,7 @@ import OpenAI from "openai";
 import { connectToDatabase } from "./db";
 import { Agent } from "./types/agent";
 import { User } from "./types/user";
+import { AgentPromptGenerator } from "./agentPromptGenerator";
 
 dotenv.config();
 
@@ -600,7 +601,7 @@ const chatWithAgent: RequestHandler<ChatParams> = async (req: Request<ChatParams
       return;
     }
 
-    const agent = await db.collection("agents").findOne({ agentId: agentId });
+    const agent = await db.collection("agents").findOne({ agentId: agentId }) as Agent | null;
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
@@ -611,10 +612,13 @@ const chatWithAgent: RequestHandler<ChatParams> = async (req: Request<ChatParams
       return;
     }
 
+    const promptGenerator = new AgentPromptGenerator(agent);
+    const prompt = promptGenerator.generatePrompt(message);
+
     const openai = new OpenAI({ apiKey: agent.openaiApiKey });
     const response = await openai.chat.completions.create({
       model: "gpt-3.5-turbo",
-      messages: [{ role: "user", content: message }],
+      messages: [{ role: "system", content: prompt }],
     });
 
     const reply = response.choices[0].message.content;
@@ -637,7 +641,7 @@ const chatWithAgentStream: RequestHandler<ChatParams> = async (req: Request<Chat
       return;
     }
 
-    const agent = await db.collection("agents").findOne({ agentId: agentId });
+    const agent = await db.collection("agents").findOne({ agentId: agentId }) as Agent | null;
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
@@ -653,6 +657,9 @@ const chatWithAgentStream: RequestHandler<ChatParams> = async (req: Request<Chat
       return;
     }
 
+    const promptGenerator = new AgentPromptGenerator(agent);
+    const prompt = promptGenerator.generatePrompt(message);
+
     const openai = new OpenAI({ apiKey: agent.openaiApiKey });
 
     res.setHeader("Content-Type", "text/event-stream");
@@ -661,7 +668,7 @@ const chatWithAgentStream: RequestHandler<ChatParams> = async (req: Request<Chat
 
     const stream = await openai.chat.completions.create({
       model: "gpt-3.5-turbo",
-      messages: [{ role: "user", content: message }],
+      messages: [{ role: "system", content: prompt }],
       stream: true,
     });
 
