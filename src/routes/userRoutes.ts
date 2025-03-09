@@ -14,5 +14,6 @@ router.get("/:userId/agents/active/count", agentController.getActiveAgentCount);
 router.put("/:userId", userController.updateUser);
 router.delete("/:userId", userController.deleteUser);
 router.delete("/", userController.deleteAllUsers);
+router.post("/credits", userController.addUserCredits);
 
 export default router;

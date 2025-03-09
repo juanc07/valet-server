@@ -13,4 +13,5 @@ export interface User {
     twitterHandle: string;
     discordId: string;
     telegramId: string;
+    credit: number;
   }

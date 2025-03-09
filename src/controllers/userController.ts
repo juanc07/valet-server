@@ -2,10 +2,27 @@ import { Request, Response } from "express";
 import { v4 as uuidv4 } from "uuid";
 import { connectToDatabase } from "../services/dbService";
 import { User } from "../types/user";
+import { verifySolPaymentWithAmount } from "../services/solanaService";
+import { LAMPORTS_PER_SOL } from "@solana/web3.js";
+import { RECEIVER_PUBLIC_KEY, SOLANA_ENDPOINT } from "../config";
+
 
 interface UserParams {
   userId: string;
 }
+
+interface AddCreditsRequestBody {
+  userId: string;
+  txSignature: string;
+  code: string; // Secret code to determine credits
+}
+
+// Secret code configuration (shared between frontend and backend)
+const CREDIT_CODES = {
+  "SECRET_CREDIT_10": 10,  // Example: "SECRET_CREDIT_10" maps to 10 credits
+  "SECRET_CREDIT_50": 50,  // Example: "SECRET_CREDIT_50" maps to 50 credits
+  "SECRET_CREDIT_100": 100, // Example: "SECRET_CREDIT_100" maps to 100 credits
+} as const;
 
 export const createUser = async (req: Request, res: Response) => {
   try {
@@ -140,5 +157,80 @@ export const getAgentCount = async (req: Request<UserParams>, res: Response) => 
   } catch (error) {
     console.error("Error fetching agent count:", error);
     res.status(500).json({ error: "Failed to fetch agent count" });
+  }
+};
+
+export const addUserCredits = async (req: Request<{}, {}, AddCreditsRequestBody>, res: Response) => {
+  console.log("1st addUserCredits");
+  try {
+    const db = await connectToDatabase();
+    const { userId, txSignature, code } = req.body;
+
+    console.log("addUserCredits request:", { userId, txSignature, code });
+
+    // Validate input
+    if (!userId || typeof userId !== "string" || userId.trim() === "") {
+      res.status(400).json({ error: "userId is required and must be a non-empty string" });
+      return;
+    }
+    if (!txSignature || typeof txSignature !== "string" || txSignature.trim() === "") {
+      res.status(400).json({ error: "txSignature is required and must be a non-empty string" });
+      return;
+    }
+    if (!code || typeof code !== "string" || !(code in CREDIT_CODES)) {
+      res.status(400).json({ error: "Invalid or missing code" });
+      return;
+    }
+
+    // Fetch user
+    const user = (await db.collection("users").findOne({ userId })) as User | null;
+    if (!user || !user.solanaWalletAddress) {
+      res.status(400).json({ error: "User not found or no Solana wallet address associated" });
+      return;
+    }
+
+    // Determine required SOL amount based on credit code
+    const CREDIT_PRICES = {
+      "SECRET_CREDIT_10": 0.05 * LAMPORTS_PER_SOL,
+      "SECRET_CREDIT_50": 0.2 * LAMPORTS_PER_SOL,
+      "SECRET_CREDIT_100": 0.5 * LAMPORTS_PER_SOL,
+    } as const;
+
+    const requiredSolAmount = CREDIT_PRICES[code as keyof typeof CREDIT_PRICES];
+    
+    // Verify Solana payment with dynamic amount
+    const paymentValid = await verifySolPaymentWithAmount(txSignature, user.solanaWalletAddress, requiredSolAmount);
+    if (!paymentValid) {
+      res.status(400).json({ 
+        error: `Transaction does not contain valid SOL transfer of ${requiredSolAmount / LAMPORTS_PER_SOL} SOL to receiver ${RECEIVER_PUBLIC_KEY}` 
+      });
+      return;
+    }
+
+    // Determine credits to add based on secret code
+    const creditsToAdd = CREDIT_CODES[code as keyof typeof CREDIT_CODES];
+
+    // Update user credits
+    const result = await db.collection("users").updateOne(
+      { userId },
+      { $inc: { credit: creditsToAdd } }
+    );
+
+    if (result.matchedCount === 0) {
+      res.status(404).json({ error: "User not found" });
+      return;
+    }
+
+    // Fetch updated user
+    const updatedUser = (await db.collection("users").findOne({ userId })) as User | null;
+    console.log("Updated user credits:", updatedUser?.credit);
+
+    res.status(200).json({ 
+      message: "Credits added successfully", 
+      newCreditBalance: updatedUser?.credit 
+    });
+  } catch (error) {
+    console.error("Error adding user credits:", error);
+    res.status(500).json({ error: "Failed to add credits" });
   }
 };
