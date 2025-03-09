@@ -338,25 +338,5 @@ export const getAgentById = async (req: Request<AgentParams>, res: Response) => 
   }
 };
 
-export const postTweetManually = async (req: Request<AgentParams>, res: Response) => {
-  try {
-    const db = await connectToDatabase();
-    const agentId = req.params.agentId;
-    const { message } = req.body;
-
-    const agent = await db.collection("agents").findOne({ agentId }) as Agent | null;
-    if (!agent) {
-      res.status(404).json({ error: "Agent not found" });
-      return;
-    }
-
-    const tweetedMessage = await postTweet(agent, message);
-    res.status(200).json({ message: "Tweet posted successfully", tweetedMessage });
-  } catch (error) {
-    console.error(`Error posting tweet manually for agent ${req.params.agentId}:`, error);
-    res.status(500).json({ error: "Failed to post tweet" });
-  }
-};
-
 export const twitterStreams = new Map<string, TweetStream>();
 export const postingIntervals = new Map<string, NodeJS.Timeout>();

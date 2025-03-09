@@ -37,3 +37,7 @@
   "userId": "user123",
   "twitterHandle": "AgentGaia"
 }
+
+// twitter developer portal 
+https://developer.x.com/en/portal/projects
+https://developer.x.com/en/portal/products

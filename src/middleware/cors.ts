@@ -7,11 +7,13 @@ const corsOptions: cors.CorsOptions = {
       FRONTEND_URL,
       "http://localhost:3001",
       "http://localhost:5173",
-      undefined,
+      "http://localhost:3000", // Backend URL for direct requests
     ];
-    if (allowedOrigins.includes(origin)) {
+    // Allow requests with no origin (e.g., OAuth callbacks) or matching allowed origins
+    if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
+      console.log(`CORS rejected origin: ${origin}`); // Debug log
       callback(new Error("Not allowed by CORS"));
     }
   },
