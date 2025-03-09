@@ -4,43 +4,19 @@ import { hasValidTwitterCredentials } from "../utils/twitterUtils";
 import { Agent } from "../types/agent";
 import { twitterStreams, postingIntervals } from "../controllers/agentController";
 import { TWITTER_API_MODE } from "../config";
+import { AgentPromptGenerator } from "../agentPromptGenerator";
 
-// Cache for paid approach (streaming client)
-let cachedStreamClient: TwitterApi | null = null;
-
-async function getStreamClient(appKey: string, appSecret: string): Promise<TwitterApi> {
-  if (cachedStreamClient) {
-    console.log("Using cached Twitter stream client");
-    return cachedStreamClient;
-  }
-
-  const client = new TwitterApi({
-    appKey,
-    appSecret,
-  });
-
-  try {
-    cachedStreamClient = await client.appLogin();
-    console.log("Twitter stream client authenticated successfully");
-    return cachedStreamClient;
-  } catch (error) {
-    console.error("Failed to authenticate Twitter stream client:", error);
-    throw error;
-  }
-}
-
-// Paid approach: Real-time streaming with v2/searchStream
-async function setupTwitterStreamListener(agent: Agent) {
+async function setupTwitterPollListenerFree(agent: Agent) {
   if (!hasValidTwitterCredentials(agent)) {
-    console.log(`Cannot setup Twitter stream listener for agent ${agent.agentId}: Invalid Twitter credentials`);
+    console.log(`Cannot setup Twitter poll listener for agent ${agent.agentId}: Invalid Twitter credentials`);
     return;
   }
+  console.log(`Twitter mention replies not supported in Free tier for agent ${agent.agentId}. Posting only enabled. Upgrade to Basic tier for replies.`);
+}
 
-  let streamClient: TwitterApi;
-  try {
-    streamClient = await getStreamClient(agent.twitterAppKey!, agent.twitterAppSecret!);
-  } catch (error) {
-    console.log(`Cannot setup Twitter stream listener for agent ${agent.agentId}: Failed to authenticate stream client`);
+async function setupTwitterPollListenerPaid(agent: Agent) {
+  if (!hasValidTwitterCredentials(agent)) {
+    console.log(`Cannot setup Twitter poll listener for agent ${agent.agentId}: Invalid Twitter credentials`);
     return;
   }
 
@@ -50,71 +26,50 @@ async function setupTwitterStreamListener(agent: Agent) {
     accessToken: agent.twitterAccessToken!,
     accessSecret: agent.twitterAccessSecret!,
   };
-  const postClient = new TwitterApi(twitterTokens);
-
+  const client = new TwitterApi(twitterTokens);
   const openai = new OpenAI({ apiKey: agent.openaiApiKey });
 
-  try {
-    const currentRules = await streamClient.v2.streamRules();
-    if (currentRules.data && currentRules.data.length > 0) {
-      await streamClient.v2.updateStreamRules({
-        delete: { ids: currentRules.data.map(rule => rule.id) }
+  let sinceId: string | undefined;
+
+  const pollForMentions = async () => {
+    try {
+      const query = `@${agent.twitterHandle} -from:${agent.twitterHandle}`;
+      const response = await client.v2.search({
+        query,
+        "tweet.fields": ["author_id", "text", "created_at"],
+        since_id: sinceId,
+        max_results: 10,
       });
-    }
 
-    await streamClient.v2.updateStreamRules({
-      add: [{ value: `@${agent.twitterHandle}`, tag: agent.agentId }],
-    });
-
-    const stream = await streamClient.v2.searchStream({
-      "tweet.fields": ["author_id", "text", "in_reply_to_user_id"],
-    });
-
-    twitterStreams.set(agent.agentId, stream);
-
-    stream.on('data', async (tweet) => {
-      try {
-        if (tweet.data.text.includes(`@${agent.twitterHandle}`)) {
-          const response = await openai.chat.completions.create({
+      const tweets = response.data.data || [];
+      if (tweets.length > 0) {
+        sinceId = tweets[0].id;
+        for (const tweet of tweets) {
+          const aiResponse = await openai.chat.completions.create({
             model: "gpt-3.5-turbo",
-            messages: [{ role: "user", content: tweet.data.text }],
+            messages: [{ role: "user", content: tweet.text }],
           });
-          const replyText = `@${tweet.author_id} ${response.choices[0].message.content}`.slice(0, 280);
-          await postClient.v2.tweet({ text: replyText }); // Use v2 for replies
-          console.log(`Agent ${agent.agentId} replied to tweet: ${replyText}`);
+          const replyText = `@${tweet.author_id} ${aiResponse.choices[0].message.content}`.slice(0, 280);
+          await client.v2.tweet({ text: replyText });
+          console.log(`Agent ${agent.agentId} replied to tweet ${tweet.id}: ${replyText}`);
         }
-      } catch (error) {
-        console.error(`Error processing tweet for agent ${agent.agentId}:`, error);
       }
-    });
+    } catch (error) {
+      console.error(`Error polling mentions for agent ${agent.agentId}:`, error);
+    }
+  };
 
-    stream.on('error', (error) => {
-      console.error(`Twitter stream error for agent ${agent.agentId}:`, error);
-    });
-
-    stream.autoReconnect = true;
-    console.log(`Twitter stream listener started for agent ${agent.agentId}`);
-  } catch (error) {
-    console.error(`Failed to setup Twitter stream listener for agent ${agent.agentId}:`, error);
-    throw error;
-  }
+  stopTwitterPollListener(agent.agentId);
+  const interval = setInterval(pollForMentions, 8 * 60 * 1000); // 8 minutes
+  pollingIntervals.set(agent.agentId, interval);
+  console.log(`Twitter poll listener (paid) started for agent ${agent.agentId} every 8 minutes`);
 }
 
-// Free approach: No polling, just log limitation
-async function setupTwitterPollListener(agent: Agent) {
-  if (!hasValidTwitterCredentials(agent)) {
-    console.log(`Cannot setup Twitter poll listener for agent ${agent.agentId}: Invalid Twitter credentials`);
-    return;
-  }
-  console.log(`Twitter poll listener not supported in Free tier for agent ${agent.agentId}. Upgrade to Basic tier for mention replies.`);
-}
-
-// Unified setup function based on TWITTER_API_MODE
 export async function setupTwitterListener(agent: Agent) {
   if (TWITTER_API_MODE === "paid") {
-    await setupTwitterStreamListener(agent);
+    await setupTwitterPollListenerPaid(agent);
   } else {
-    await setupTwitterPollListener(agent);
+    await setupTwitterPollListenerFree(agent);
   }
 }
 
@@ -146,21 +101,26 @@ export async function setupTwitterListeners(db: any) {
   }
 }
 
-// Stop functions for both approaches
 export async function stopTwitterListener(agentId: string) {
   if (TWITTER_API_MODE === "paid") {
-    try {
-      const stream = twitterStreams.get(agentId);
-      if (stream) {
-        stream.destroy();
-        twitterStreams.delete(agentId);
-        console.log(`Twitter stream listener stopped for agent ${agentId}`);
-      }
-    } catch (error) {
-      console.error(`Error stopping Twitter stream listener for agent ${agentId}:`, error);
-    }
+    stopTwitterPollListener(agentId);
   } else {
     console.log(`No Twitter poll listener to stop for agent ${agentId} in Free tier`);
+  }
+}
+
+const pollingIntervals = new Map<string, NodeJS.Timeout>();
+
+function stopTwitterPollListener(agentId: string) {
+  try {
+    const interval = pollingIntervals.get(agentId);
+    if (interval) {
+      clearInterval(interval);
+      pollingIntervals.delete(agentId);
+      console.log(`Twitter poll listener stopped for agent ${agentId}`);
+    }
+  } catch (error) {
+    console.error(`Error stopping Twitter poll listener for agent ${agentId}:`, error);
   }
 }
 
@@ -189,26 +149,36 @@ export async function postRandomTweet(agent: Agent) {
     accessToken: agent.twitterAccessToken!,
     accessSecret: agent.twitterAccessSecret!,
   };
-
   const twitterClient = new TwitterApi(twitterTokens);
+  const openai = new OpenAI({ apiKey: agent.openaiApiKey });
+  const promptGenerator = new AgentPromptGenerator(agent);
 
-  const randomMessages = [
-    `Hello from ${agent.name}! Just a basic agent checking in.`,
-    `${agent.name} here: What's happening on X today?`,
-    `Agent ${agent.name} says: ${agent.personality.catchphrase}`,
-  ];
-  const randomMessage = randomMessages[Math.floor(Math.random() * randomMessages.length)];
+  const timestamp = new Date().toISOString();
+  const userMessage = `Generate a short, unique tweet for me to post on Twitter right now at ${timestamp}. Keep it under 280 characters and reflect my personality.`;
+  const prompt = promptGenerator.generatePrompt(userMessage);
 
   try {
-    await twitterClient.v2.tweet({ text: randomMessage });
-    console.log(`Agent ${agent.agentId} posted: ${randomMessage}`);
+    const response = await openai.chat.completions.create({
+      model: "gpt-3.5-turbo",
+      messages: [{ role: "user", content: prompt }],
+    });
+
+    // Check if response is valid before accessing content
+    let tweetText = `Tweet from ${agent.name} at ${timestamp}`; // Fallback
+    if (response.choices && response.choices[0] && response.choices[0].message && response.choices[0].message.content) {
+      tweetText = response.choices[0].message.content.slice(0, 280);
+    } else {
+      console.warn(`OpenAI response missing content for agent ${agent.agentId}, using fallback`);
+    }
+
+    await twitterClient.v2.tweet({ text: tweetText });
+    console.log(`Agent ${agent.agentId} posted: ${tweetText}`);
   } catch (error) {
     console.error(`Failed to post tweet for agent ${agent.agentId}:`, error);
     throw error;
   }
 }
 
-// Manual posting function
 export async function postTweet(agent: Agent, message?: string) {
   if (!hasValidTwitterCredentials(agent)) {
     console.log(`Cannot post tweet for agent ${agent.agentId}: Invalid Twitter credentials`);
@@ -221,7 +191,6 @@ export async function postTweet(agent: Agent, message?: string) {
     accessToken: agent.twitterAccessToken!,
     accessSecret: agent.twitterAccessSecret!,
   };
-
   const twitterClient = new TwitterApi(twitterTokens);
 
   const tweetMessage = message || `Manual tweet from ${agent.name} at ${new Date().toISOString()}`;

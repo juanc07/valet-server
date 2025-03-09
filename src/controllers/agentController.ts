@@ -338,12 +338,11 @@ export const getAgentById = async (req: Request<AgentParams>, res: Response) => 
   }
 };
 
-// Manual tweeting endpoint
 export const postTweetManually = async (req: Request<AgentParams>, res: Response) => {
   try {
     const db = await connectToDatabase();
     const agentId = req.params.agentId;
-    const { message } = req.body; // Optional message from request body
+    const { message } = req.body;
 
     const agent = await db.collection("agents").findOne({ agentId }) as Agent | null;
     if (!agent) {
