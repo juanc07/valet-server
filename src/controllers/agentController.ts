@@ -79,7 +79,7 @@ export const createAgent = async (req: Request, res: Response) => {
       return;
     }
 
-    const user = await db.collection("users").findOne({ userId: agent.createdBy }) as User | null;
+    const user = (await db.collection("users").findOne({ userId: agent.createdBy })) as User | null;
     if (!user || !user.solanaWalletAddress) {
       res.status(400).json({ error: "User not found or no Solana wallet address associated" });
       return;
@@ -100,7 +100,9 @@ export const createAgent = async (req: Request, res: Response) => {
 
     const result = await db.collection("agents").insertOne(newAgent);
 
-    if (newAgent.isActive && hasValidTwitterCredentials(newAgent) && newAgent.settings.platforms?.includes("twitter")) {
+    // Check if platforms is an array before calling includes
+    const hasTwitterPlatform = Array.isArray(newAgent.settings?.platforms) && newAgent.settings.platforms.includes("twitter");
+    if (newAgent.isActive && hasValidTwitterCredentials(newAgent) && hasTwitterPlatform) {
       await setupTwitterListener(newAgent);
       if (newAgent.enablePostTweet === true && newAgent.agentType === "basic") {
         startPostingInterval(newAgent);
@@ -190,7 +192,7 @@ export const updateAgent = async (req: Request<AgentParams>, res: Response) => {
     const updatedAgent: Partial<Agent> = req.body;
     console.log("Update payload:", updatedAgent);
 
-    const currentAgent = await db.collection("agents").findOne({ agentId }) as Agent | null;
+    const currentAgent = (await db.collection("agents").findOne({ agentId })) as Agent | null;
     if (!currentAgent) {
       console.log("2nd updateAgent agent not found");
       res.status(404).json({ error: "Agent not found" });
@@ -198,10 +200,7 @@ export const updateAgent = async (req: Request<AgentParams>, res: Response) => {
     }
     console.log("Current agent:", currentAgent);
 
-    const result = await db.collection("agents").updateOne(
-      { agentId: agentId },
-      { $set: updatedAgent }
-    );
+    const result = await db.collection("agents").updateOne({ agentId: agentId }, { $set: updatedAgent });
 
     if (result.matchedCount === 0) {
       console.log("3rd updateAgent agent not found");
@@ -209,7 +208,7 @@ export const updateAgent = async (req: Request<AgentParams>, res: Response) => {
       return;
     }
 
-    const newAgentData = await db.collection("agents").findOne({ agentId }) as Agent | null;
+    const newAgentData = (await db.collection("agents").findOne({ agentId })) as Agent | null;
     if (!newAgentData) {
       console.log("4th updateAgent Failed to retrieve updated agent");
       res.status(500).json({ error: "Failed to retrieve updated agent" });
@@ -225,15 +224,20 @@ export const updateAgent = async (req: Request<AgentParams>, res: Response) => {
     const isPostingEnabledNow = newAgentData.enablePostTweet ?? wasPostingEnabled;
     const wasBasic = currentAgent.agentType === "basic";
     const isBasicNow = newAgentData.agentType === "basic";
-    const hadTwitterPlatform = currentAgent.settings.platforms?.includes("twitter") ?? false;
-    const hasTwitterPlatformNow = newAgentData.settings.platforms?.includes("twitter") ?? false;
+    const hadTwitterPlatform = Array.isArray(currentAgent.settings?.platforms) && currentAgent.settings.platforms.includes("twitter");
+    const hasTwitterPlatformNow = Array.isArray(newAgentData.settings?.platforms) && newAgentData.settings.platforms.includes("twitter");
 
     console.log("State check:", {
-      wasActive, isActiveNow,
-      hadCredentials, hasCredentialsNow,
-      wasPostingEnabled, isPostingEnabledNow,
-      wasBasic, isBasicNow,
-      hadTwitterPlatform, hasTwitterPlatformNow
+      wasActive,
+      isActiveNow,
+      hadCredentials,
+      hasCredentialsNow,
+      wasPostingEnabled,
+      isPostingEnabledNow,
+      wasBasic,
+      isBasicNow,
+      hadTwitterPlatform,
+      hasTwitterPlatformNow,
     });
 
     if (!hasCredentialsNow || !hasTwitterPlatformNow) {
@@ -247,7 +251,7 @@ export const updateAgent = async (req: Request<AgentParams>, res: Response) => {
     } else if (!wasActive && isActiveNow && hasTwitterPlatformNow) {
       console.log("7th updateAgent setupTwitterListener");
       await setupTwitterListener(newAgentData);
-    } else if (isActiveNow && hasTwitterPlatformNow && (!hadCredentials && hasCredentialsNow || !hadTwitterPlatform && hasTwitterPlatformNow)) {
+    } else if (isActiveNow && hasTwitterPlatformNow && (!hadCredentials && hasCredentialsNow) || (!hadTwitterPlatform && hasTwitterPlatformNow)) {
       console.log("8th updateAgent stopTwitterListener and setupTwitterListener");
       await stopTwitterListener(agentId);
       try {
