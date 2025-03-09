@@ -31,7 +31,7 @@ export const chatWithAgent = async (req: Request<ChatParams>, res: Response) => 
     }
 
     if (!agent.openaiApiKey || agent.openaiApiKey.trim() === "") {
-      res.status(400).json({ agentId, reply: "API key is required to process your request." });
+      res.status(400).json({ agentId, reply: "OPENAI API key is required to process your request." });
       return;
     }
 
@@ -83,7 +83,7 @@ export const chatWithAgentStream = async (req: Request<ChatParams>, res: Respons
       res.setHeader("Content-Type", "text/event-stream");
       res.setHeader("Cache-Control", "no-cache");
       res.setHeader("Connection", "keep-alive");
-      res.write(`data: ${JSON.stringify({ agentId, content: "API key is required to process your request." })}\n\n`);
+      res.write(`data: ${JSON.stringify({ agentId, content: "OPENAI API key is required to process your request." })}\n\n`);
       res.write("data: [DONE]\n\n");
       res.end();
       return;

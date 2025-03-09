@@ -10,4 +10,4 @@ export const FRONTEND_URL = process.env.FRONTEND_URL;
 export const TWITTER_API_MODE = process.env.TWITTER_API_MODE || "free"; // Default to free
 
 export const RECEIVER_PUBLIC_KEY = new PublicKey(SOLANA_PAYMENT_WALLET);
-export const SOL_AMOUNT = 0.01 * LAMPORTS_PER_SOL;
+export const AGENT_CREATION_SOL_AMOUNT = 0.2 * LAMPORTS_PER_SOL;

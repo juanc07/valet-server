@@ -1,5 +1,5 @@
 import { Connection, PublicKey, SystemProgram } from "@solana/web3.js";
-import { SOL_AMOUNT, RECEIVER_PUBLIC_KEY, SOLANA_ENDPOINT } from "../config";
+import { AGENT_CREATION_SOL_AMOUNT, RECEIVER_PUBLIC_KEY, SOLANA_ENDPOINT } from "../config";
 
 // Original method kept for backward compatibility
 export async function verifySolPayment(txSignature: string, senderWallet: string): Promise<boolean> {
@@ -16,7 +16,7 @@ export async function verifySolPayment(txSignature: string, senderWallet: string
       ix.parsed?.type === "transfer" &&
       ix.parsed.info.source === senderWallet &&
       ix.parsed.info.destination === RECEIVER_PUBLIC_KEY.toString() &&
-      ix.parsed.info.lamports === SOL_AMOUNT
+      ix.parsed.info.lamports === AGENT_CREATION_SOL_AMOUNT
   );
 
   return !!transferInstruction;
