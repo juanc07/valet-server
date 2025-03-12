@@ -47,3 +47,4 @@ bower_components/
 # MongoDB local data (if stored locally)
 data/
 mongod.lock
+.qodo
