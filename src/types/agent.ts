@@ -48,4 +48,5 @@ export interface Agent {
   postTweetInterval?: number;
   agentType: "basic" | "puppetos" | "thirdparty"; // required in creation default to basic
   createdBy: string;  // userId who created the agent
+  profileImageId?: string;
 }
