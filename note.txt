@@ -39,5 +39,13 @@
 }
 
 // twitter developer portal 
+https://developer.x.com/en/portal/products/basic
+https://developer.x.com/en/portal/dashboard
+https://developer.x.com/en/portal/projects/1899651580716347392/apps/30377607/settings
 https://developer.x.com/en/portal/projects
 https://developer.x.com/en/portal/products
+
+//twitter api
+https://developer.x.com/en/support/x-api/v2
+https://developer.x.com/en/support/x-api/v2#faq-v2-use-cases
+https://developer.x.com/en/support/x-api/v2#faq-v2-setup

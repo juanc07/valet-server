@@ -16,6 +16,12 @@ interface UserParams {
   userId: string;
 }
 
+interface TweetReply {
+  agentId: string;
+  tweetId: string;
+  repliedAt: Date;
+}
+
 export const createAgent = async (req: Request, res: Response) => {
   console.log("1st createAgent");
   try {
@@ -100,7 +106,6 @@ export const createAgent = async (req: Request, res: Response) => {
 
     const result = await db.collection("agents").insertOne(newAgent);
 
-    // Check if platforms is an array before calling includes
     const hasTwitterPlatform = Array.isArray(newAgent.settings?.platforms) && newAgent.settings.platforms.includes("twitter");
     if (newAgent.isActive && hasValidTwitterCredentials(newAgent) && hasTwitterPlatform) {
       await setupTwitterListener(newAgent);
@@ -240,44 +245,25 @@ export const updateAgent = async (req: Request<AgentParams>, res: Response) => {
       hasTwitterPlatformNow,
     });
 
-    if (!hasCredentialsNow || !hasTwitterPlatformNow) {
-      console.log("5th updateAgent stopTwitterListener and stopPostingInterval");
-      await stopTwitterListener(agentId);
-      stopPostingInterval(agentId);
-    } else if (wasActive && !isActiveNow) {
-      console.log("6th updateAgent stopTwitterListener and stopPostingInterval");
-      await stopTwitterListener(agentId);
-      stopPostingInterval(agentId);
-    } else if (!wasActive && isActiveNow && hasTwitterPlatformNow) {
-      console.log("7th updateAgent setupTwitterListener");
-      await setupTwitterListener(newAgentData);
-    } else if (isActiveNow && hasTwitterPlatformNow && (!hadCredentials && hasCredentialsNow) || (!hadTwitterPlatform && hasTwitterPlatformNow)) {
-      console.log("8th updateAgent stopTwitterListener and setupTwitterListener");
-      await stopTwitterListener(agentId);
+    await stopTwitterListener(agentId);
+    stopPostingInterval(agentId);
+
+    if (isActiveNow && hasCredentialsNow && hasTwitterPlatformNow) {
+      console.log("Setting up Twitter listener for agent after update");
       try {
         await setupTwitterListener(newAgentData);
       } catch (twitterError) {
         console.error("Failed to setup Twitter listener in updateAgent:", twitterError);
       }
     } else {
-      console.log("No Twitter listener change needed");
+      console.log("Skipping Twitter listener setup: Conditions not met");
     }
 
-    if (!hasCredentialsNow || !hasTwitterPlatformNow) {
-      console.log("9th updateAgent stopPostingInterval");
-      stopPostingInterval(agentId);
-    } else if (isActiveNow && isBasicNow && isPostingEnabledNow && hasTwitterPlatformNow) {
-      if (!wasPostingEnabled || (!hadCredentials && hasCredentialsNow) || (!wasBasic && isBasicNow) || (!hadTwitterPlatform && hasTwitterPlatformNow)) {
-        console.log("10th updateAgent startPostingInterval");
-        startPostingInterval(newAgentData);
-      } else {
-        console.log("Posting interval already active or no change");
-      }
-    } else if (wasPostingEnabled && (wasActive || wasBasic || wasPostingEnabled || hadTwitterPlatform)) {
-      console.log("11th updateAgent stopPostingInterval");
-      stopPostingInterval(agentId);
+    if (isActiveNow && isBasicNow && isPostingEnabledNow && hasCredentialsNow && hasTwitterPlatformNow) {
+      console.log("Restarting posting interval for agent after update");
+      startPostingInterval(newAgentData);
     } else {
-      console.log("No posting interval change needed");
+      console.log("Skipping posting interval setup: Conditions not met");
     }
 
     res.status(200).json({ message: "Agent updated" });
@@ -339,6 +325,39 @@ export const getAgentById = async (req: Request<AgentParams>, res: Response) => 
   } catch (error) {
     console.error("Error fetching agent by ID:", error);
     res.status(500).json({ error: "Failed to fetch agent" });
+  }
+};
+
+// New method to save tweet replies to MongoDB
+export const saveTweetReply = async (agentId: string, tweetId: string): Promise<void> => {
+  try {
+    const db = await connectToDatabase();
+    const tweetReply: TweetReply = {
+      agentId,
+      tweetId,
+      repliedAt: new Date(),
+    };
+    const result = await db.collection("tweetReplies").updateOne(
+      { agentId, tweetId },
+      { $set: tweetReply },
+      { upsert: true }
+    );
+    console.log(`Saved tweet reply for agent ${agentId}, tweet ${tweetId}. Upserted: ${result.upsertedCount > 0}`);
+  } catch (error) {
+    console.error(`Error saving tweet reply for agent ${agentId}, tweet ${tweetId}:`, error);
+    throw error;
+  }
+};
+
+// Optional: Method to check if a tweet has been replied to
+export const hasRepliedToTweet = async (agentId: string, tweetId: string): Promise<boolean> => {
+  try {
+    const db = await connectToDatabase();
+    const reply = await db.collection("tweetReplies").findOne({ agentId, tweetId });
+    return !!reply;
+  } catch (error) {
+    console.error(`Error checking tweet reply for agent ${agentId}, tweet ${tweetId}:`, error);
+    return false; // Assume not replied if there's an error
   }
 };
 
