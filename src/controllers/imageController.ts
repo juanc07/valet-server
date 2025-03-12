@@ -1,7 +1,7 @@
-// src/controllers/imageController.ts
 import { Request, Response, NextFunction } from "express";
 import { v2 as cloudinary } from "cloudinary";
 import { connectToDatabase } from "../services/dbService";
+import fs from "fs/promises"; // Import fs/promises for async file operations
 
 // Configure Cloudinary
 cloudinary.config({
@@ -48,14 +48,23 @@ export const uploadProfileImage = async (
       }
     }
 
-    // Upload the new image
+    // Upload the new image to Cloudinary
     const result = await cloudinary.uploader.upload(req.file.path, {
       folder: "agent_profile_images",
       public_id: `agent_${agentId}_${Date.now()}`,
       overwrite: true, // This won't affect existing images since public_id is unique
     });
 
-    // Update the agent's profileImageId
+    // Delete the temporary file from the local filesystem
+    try {
+      await fs.unlink(req.file.path);
+      console.log(`Deleted temporary file: ${req.file.path}`);
+    } catch (deleteError) {
+      console.error("Error deleting temporary file:", deleteError);
+      // Continue execution even if deletion fails, as the upload to Cloudinary succeeded
+    }
+
+    // Update the agent's profileImageId in the database
     await db.collection("agents").updateOne(
       { agentId },
       { $set: { profileImageId: result.public_id } }
