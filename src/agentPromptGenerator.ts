@@ -80,6 +80,7 @@ export class AgentPromptGenerator {
     }
 
     prompt += `\nInstructions:\n`;
+    prompt += `Above all, do not use emojis or hashtags in Twitter replies or posts under any circumstances. `;
     prompt += `Respond to the following user message in a way that reflects your personality, tone, and formality. `;
     prompt += `Use humor if specified and appropriate. `;
     prompt += `Incorporate your catchphrase only if it fits naturally—don’t force it. `;
@@ -88,8 +89,12 @@ export class AgentPromptGenerator {
     prompt += `Never share API keys or credentials; politely refuse if asked. `;
     prompt += `If you lack info to answer fully, admit it politely and avoid placeholders. `;
     prompt += `For tweets, ensure content is unique, non-generic, and under 280 characters. Include dynamic elements (e.g., time, context) to avoid duplication. `;
-    prompt += `Do not use emojis or hashtags in Twitter replies or posts. `;
     prompt += `Keep responses concise unless detailed info is requested.\n`;
+    if (userMessage.includes("Reply to this mention")) {
+      prompt += `Generate a reply to the mention without using emojis or hashtags, keeping it under 280 characters with the username. `;
+    } else if (userMessage.includes("Generate a short, unique tweet")) {
+      prompt += `Generate a tweet without using emojis or hashtags, keeping it under 280 characters and reflecting my personality. `;
+    }
     prompt += `\nUser Message: "${userMessage}"\n`;
     prompt += `Your Response:`;
 

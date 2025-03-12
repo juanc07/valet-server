@@ -3,7 +3,7 @@ import OpenAI from "openai";
 import { hasValidTwitterCredentials } from "../utils/twitterUtils";
 import { Agent } from "../types/agent";
 import { twitterStreams, postingIntervals, saveTweetReply, hasRepliedToTweet } from "../controllers/agentController";
-import { TWITTER_API_MODE, TWITTER_APP_KEY, TWITTER_APP_SECRET, TWITTER_BEARER_TOKEN } from "../config";
+import { TWITTER_API_MODE, TWITTER_APP_KEY, TWITTER_APP_SECRET, TWITTER_BEARER_TOKEN, MENTION_POLL_MIN_MINUTES, MENTION_POLL_MAX_MINUTES } from "../config";
 import { AgentPromptGenerator } from "../agentPromptGenerator";
 
 // Helper to fetch Twitter user ID from handle
@@ -41,7 +41,7 @@ async function setupTwitterPollListenerFree(agent: Agent) {
 }
 
 // Paid tier (Basic): Real-time streaming with Filtered Stream for mentions using Bearer Token
-async function setupTwitterStreamListenerPaid(agent: Agent) {
+async function setupTwitterStreamListenerPaid(agent: Agent, db: any) {
   if (!TWITTER_BEARER_TOKEN) {
     console.log(`Cannot setup Twitter stream listener for agent ${agent.agentId}: Missing TWITTER_BEARER_TOKEN in environment`);
     return false;
@@ -98,18 +98,13 @@ async function setupTwitterStreamListenerPaid(agent: Agent) {
       stream.on("data", async (tweet) => {
         try {
           console.log(`Raw tweet data for agent ${agent.agentId}:`, JSON.stringify(tweet, null, 2));
-          const tweetData = tweet.data || tweet; // Handle nested or flat structure
+          const tweetData = tweet.data || tweet;
           if (!tweetData.author_id) {
             console.error(`No author_id found in tweet for agent ${agent.agentId}:`, tweetData);
             return;
           }
 
           const tweetId = tweetData.id;
-          if (await hasRepliedToTweet(agent.agentId, tweetId)) {
-            console.log(`Skipping already replied tweet ${tweetId} for agent ${agent.agentId}`);
-            return;
-          }
-
           const authorUsername = await getUsernameFromId(tweetData.author_id, postClient);
 
           if (!authorUsername || authorUsername === twitterHandle) {
@@ -117,24 +112,40 @@ async function setupTwitterStreamListenerPaid(agent: Agent) {
             return;
           }
 
+          const hasReplied = await hasRepliedToTweet(agent.agentId, tweetId, db, authorUsername);
+          if (hasReplied) {
+            console.log(`Skipping tweet ${tweetId} for agent ${agent.agentId}: ${hasReplied ? 'Already replied or cooldown active' : 'No reply yet'}`);
+            return;
+          }
+
           const promptGenerator = new AgentPromptGenerator(agent);
-          const prompt = promptGenerator.generatePrompt(`Reply to this mention: "${tweetData.text}"`);
+          const prompt = promptGenerator.generatePrompt(`Reply to this mention from @${authorUsername}: "${tweetData.text}"\nPersonalize your response by addressing @${authorUsername} directly.`);
           console.log(`Generated prompt for agent ${agent.agentId}: ${prompt}`);
           const aiResponse = await openai.chat.completions.create({
             model: "gpt-3.5-turbo",
             messages: [{ role: "user", content: prompt }],
           });
-          console.log(`AI response received for agent ${agent.agentId}:`, aiResponse.choices[0].message.content);
+          console.log(`AI response received for agent ${agent.agentId}:`, aiResponse.choices[0]?.message?.content);
 
-          const replyText = `@${authorUsername} ${aiResponse.choices[0].message.content}`.slice(0, 280);
+          let responseText = aiResponse.choices[0]?.message?.content || `Sorry, @${authorUsername}, I couldn't generate a response.`;
+          responseText = responseText.replace(/[\u{1F600}-\u{1F6FF}]/gu, ''); // Remove emojis
+          responseText = responseText.replace(/#\w+/g, ''); // Remove hashtags
+          const replyText = `@${authorUsername} ${responseText}`.slice(0, 280);
+
+          // Normalize and check for target agent
+          const normalizedUsername = authorUsername.trim().toLowerCase();
+          console.log(`Checking if ${normalizedUsername} is an agent for tweet ${tweetId}`);
+          const targetAgent = await db.collection("agents").findOne({ twitterHandle: { $regex: new RegExp(`^${normalizedUsername}$`, 'i') } });
+          console.log(`Target agent lookup for ${normalizedUsername}:`, targetAgent);
+          const targetAgentId = targetAgent ? targetAgent.agentId : undefined;
+
           await postClient.v2.tweet({
             text: replyText,
             reply: { in_reply_to_tweet_id: tweetId },
           });
           console.log(`Agent ${agent.agentId} replied to tweet ${tweetId}: ${replyText}`);
 
-          // Save the reply to MongoDB
-          await saveTweetReply(agent.agentId, tweetId);
+          await saveTweetReply(agent.agentId, tweetId, db, targetAgentId, authorUsername);
         } catch (error) {
           console.error(`Error processing mention for agent ${agent.agentId}, tweet ID: ${(tweet.data || tweet).id || 'unknown'}:`, error);
         }
@@ -154,16 +165,16 @@ async function setupTwitterStreamListenerPaid(agent: Agent) {
     } else {
       console.log(`Reusing existing stream for agent ${agent.agentId}`);
     }
-    return true; // Success
+    return true;
   } catch (error) {
     console.error(`Detailed error setting up Twitter stream for agent ${agent.agentId}:`, error);
     stopTwitterStreamListener(agent.agentId);
-    return false; // Failure
+    return false;
   }
 }
 
-// NEW: Fallback to User Mention Timeline polling for mentions
-async function setupTwitterMentionsListenerPaid(agent: Agent) {
+// Fallback to User Mention Timeline polling with retry logic
+async function setupTwitterMentionsListenerPaid(agent: Agent, db: any) {
   if (!hasValidTwitterCredentials(agent)) {
     console.log(`Cannot setup Twitter mentions listener for agent ${agent.agentId}: Invalid Twitter credentials`);
     return;
@@ -195,7 +206,7 @@ async function setupTwitterMentionsListenerPaid(agent: Agent) {
 
   let sinceId: string | undefined;
 
-  const checkMentions = async () => {
+  const checkMentions = async (retries = 3, delayMs = 5000) => {
     try {
       console.log(`Polling mentions started at ${new Date().toISOString()} for agent ${agent.agentId} with user ID ${twitterUserId}`);
       const mentions = await client.v2.userMentionTimeline(twitterUserId, {
@@ -217,11 +228,6 @@ async function setupTwitterMentionsListenerPaid(agent: Agent) {
           }
 
           const tweetId = tweet.id;
-          if (await hasRepliedToTweet(agent.agentId, tweetId)) {
-            console.log(`Skipping already replied tweet ${tweetId} for agent ${agent.agentId}`);
-            continue;
-          }
-
           const authorUsername = await getUsernameFromId(tweet.author_id, client);
 
           if (!authorUsername || authorUsername === twitterHandle) {
@@ -229,42 +235,75 @@ async function setupTwitterMentionsListenerPaid(agent: Agent) {
             continue;
           }
 
+          const hasReplied = await hasRepliedToTweet(agent.agentId, tweetId, db, authorUsername);
+          if (hasReplied) {
+            console.log(`Skipping tweet ${tweetId} for agent ${agent.agentId}: ${hasReplied ? 'Already replied or cooldown active' : 'No reply yet'}`);
+            continue;
+          }
+
           const promptGenerator = new AgentPromptGenerator(agent);
-          const prompt = promptGenerator.generatePrompt(`Reply to this mention: "${tweet.text}"`);
+          const prompt = promptGenerator.generatePrompt(`Reply to this mention from @${authorUsername}: "${tweet.text}"\nPersonalize your response by addressing @${authorUsername} directly.`);
           console.log(`Generated prompt for tweet ${tweetId}: ${prompt}`);
           const aiResponse = await openai.chat.completions.create({
             model: "gpt-3.5-turbo",
             messages: [{ role: "user", content: prompt }],
           });
-          console.log(`AI response for tweet ${tweetId}:`, aiResponse.choices[0].message.content);
+          console.log(`AI response for tweet ${tweetId}:`, aiResponse.choices[0]?.message?.content);
 
-          const replyText = `@${authorUsername} ${aiResponse.choices[0].message.content}`.slice(0, 280);
+          let responseText = aiResponse.choices[0]?.message?.content || `Sorry, @${authorUsername}, I couldn't generate a response.`;
+          responseText = responseText.replace(/[\u{1F600}-\u{1F6FF}]/gu, '');
+          responseText = responseText.replace(/#\w+/g, '');
+          const replyText = `@${authorUsername} ${responseText}`.slice(0, 280);
+
+          // Normalize and check for target agent
+          const normalizedUsername = authorUsername.trim().toLowerCase();
+          console.log(`Checking if ${normalizedUsername} is an agent for tweet ${tweetId}`);
+          const targetAgent = await db.collection("agents").findOne({ twitterHandle: { $regex: new RegExp(`^${normalizedUsername}$`, 'i') } });
+          console.log(`Target agent lookup for ${normalizedUsername}:`, targetAgent);
+          const targetAgentId = targetAgent ? targetAgent.agentId : undefined;
+
           await client.v2.tweet({
             text: replyText,
             reply: { in_reply_to_tweet_id: tweetId },
           });
           console.log(`Agent ${agent.agentId} replied to tweet ${tweetId}: ${replyText}`);
 
-          // Save the reply to MongoDB
-          await saveTweetReply(agent.agentId, tweetId);
+          await saveTweetReply(agent.agentId, tweetId, db, targetAgentId, authorUsername);
         }
       }
-    } catch (error) {
+
+      // Schedule next poll
+      scheduleNextPoll();
+    } catch (error: any) {
+      if (error.code === 524 && retries > 0) {
+        console.log(`Retrying polling for agent ${agent.agentId} after 524 error. Retries left: ${retries}, Delay: ${delayMs}ms`);
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+        return checkMentions(retries - 1, delayMs * 2); // Exponential backoff
+      }
       console.error(`Error polling mentions for agent ${agent.agentId}:`, error);
+      scheduleNextPoll(); // Continue polling even on error
     }
   };
 
+  const scheduleNextPoll = () => {
+    const minMinutes = parseInt(MENTION_POLL_MIN_MINUTES || "5", 10);
+    const maxMinutes = parseInt(MENTION_POLL_MAX_MINUTES || "10", 10);
+    const randomMinutes = minMinutes + Math.random() * (maxMinutes - minMinutes);
+    const intervalMs = randomMinutes * 60 * 1000;
+    const interval = setTimeout(() => {
+      console.log(`Scheduling next poll for agent ${agent.agentId} in ${randomMinutes.toFixed(2)} minutes`);
+      checkMentions();
+    }, intervalMs);
+    pollingIntervals.set(agent.agentId, interval);
+  };
+
   stopTwitterPollListener(agent.agentId);
-  const interval = setInterval(() => {
-    console.log(`Scheduling polling for agent ${agent.agentId} at ${new Date().toISOString()}`);
-    checkMentions();
-  }, 5 * 60 * 1000); // Poll every 5 minutes
-  pollingIntervals.set(agent.agentId, interval);
-  console.log(`Twitter mentions listener (paid) started for agent ${agent.agentId} every 5 minutes`);
+  checkMentions();
+  console.log(`Twitter mentions listener (paid) started for agent ${agent.agentId} with random polling between ${MENTION_POLL_MIN_MINUTES} and ${MENTION_POLL_MAX_MINUTES} minutes`);
 }
 
 // Fallback polling for paid tier if streaming isn’t desired or fails
-async function setupTwitterPollListenerPaid(agent: Agent) {
+async function setupTwitterPollListenerPaid(agent: Agent, db: any) {
   if (!hasValidTwitterCredentials(agent)) {
     console.log(`Cannot setup Twitter poll listener for agent ${agent.agentId}: Invalid Twitter credentials`);
     return;
@@ -288,7 +327,7 @@ async function setupTwitterPollListenerPaid(agent: Agent) {
 
   let sinceId: string | undefined;
 
-  const pollForMentions = async () => {
+  const pollForMentions = async (retries = 3, delayMs = 5000) => {
     try {
       console.log(`Polling mentions started at ${new Date().toISOString()} for agent ${agent.agentId}`);
       const query = `@${twitterHandle} -from:${twitterHandle}`;
@@ -312,11 +351,6 @@ async function setupTwitterPollListenerPaid(agent: Agent) {
           }
 
           const tweetId = tweet.id;
-          if (await hasRepliedToTweet(agent.agentId, tweetId)) {
-            console.log(`Skipping already replied tweet ${tweetId} for agent ${agent.agentId}`);
-            continue;
-          }
-
           const authorUsername = await getUsernameFromId(tweet.author_id, client);
 
           if (!authorUsername || authorUsername === twitterHandle) {
@@ -324,37 +358,70 @@ async function setupTwitterPollListenerPaid(agent: Agent) {
             continue;
           }
 
+          const hasReplied = await hasRepliedToTweet(agent.agentId, tweetId, db, authorUsername);
+          if (hasReplied) {
+            console.log(`Skipping tweet ${tweetId} for agent ${agent.agentId}: ${hasReplied ? 'Already replied or cooldown active' : 'No reply yet'}`);
+            continue;
+          }
+
+          const promptGenerator = new AgentPromptGenerator(agent);
+          const prompt = promptGenerator.generatePrompt(`Reply to this mention from @${authorUsername}: "${tweet.text}"\nPersonalize your response by addressing @${authorUsername} directly.`);
+          console.log(`Generated prompt for tweet ${tweetId}: ${prompt}`);
           const aiResponse = await openai.chat.completions.create({
             model: "gpt-3.5-turbo",
-            messages: [{ role: "user", content: tweet.text }],
+            messages: [{ role: "user", content: prompt }],
           });
-          const replyText = `@${authorUsername} ${aiResponse.choices[0].message.content}`.slice(0, 280);
+          console.log(`AI response for tweet ${tweetId}:`, aiResponse.choices[0]?.message?.content);
+
+          let responseText = aiResponse.choices[0]?.message?.content || `Sorry, @${authorUsername}, I couldn't generate a response.`;
+          responseText = responseText.replace(/[\u{1F600}-\u{1F6FF}]/gu, '');
+          responseText = responseText.replace(/#\w+/g, '');
+          const replyText = `@${authorUsername} ${responseText}`.slice(0, 280);
+
+          // Normalize and check for target agent
+          const normalizedUsername = authorUsername.trim().toLowerCase();
+          console.log(`Checking if ${normalizedUsername} is an agent for tweet ${tweetId}`);
+          const targetAgent = await db.collection("agents").findOne({ twitterHandle: { $regex: new RegExp(`^${normalizedUsername}$`, 'i') } });
+          console.log(`Target agent lookup for ${normalizedUsername}:`, targetAgent);
+          const targetAgentId = targetAgent ? targetAgent.agentId : undefined;
+
           await client.v2.tweet({
             text: replyText,
             reply: { in_reply_to_tweet_id: tweetId },
           });
           console.log(`Agent ${agent.agentId} replied to tweet ${tweetId}: ${replyText}`);
 
-          // Save the reply to MongoDB
-          await saveTweetReply(agent.agentId, tweetId);
+          await saveTweetReply(agent.agentId, tweetId, db, targetAgentId, authorUsername);
         }
       }
-    } catch (error) {
+
+      scheduleNextPoll();
+    } catch (error: any) {
+      if (error.code === 524 && retries > 0) {
+        console.log(`Retrying polling for agent ${agent.agentId} after 524 error. Retries left: ${retries}, Delay: ${delayMs}ms`);
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+        return pollForMentions(retries - 1, delayMs * 2);
+      }
       console.error(`Error polling mentions for agent ${agent.agentId}:`, error);
+      scheduleNextPoll();
     }
   };
 
+  const scheduleNextPoll = () => {
+    const interval = setInterval(() => {
+      console.log(`Scheduling polling for agent ${agent.agentId} at ${new Date().toISOString()}`);
+      pollForMentions();
+    }, 8 * 60 * 1000); // Poll every 8 minutes
+    pollingIntervals.set(agent.agentId, interval);
+  };
+
   stopTwitterPollListener(agent.agentId);
-  const interval = setInterval(() => {
-    console.log(`Scheduling polling for agent ${agent.agentId} at ${new Date().toISOString()}`);
-    pollForMentions();
-  }, 8 * 60 * 1000); // Poll every 8 minutes
-  pollingIntervals.set(agent.agentId, interval);
+  pollForMentions();
   console.log(`Twitter poll listener (paid) started for agent ${agent.agentId} every 8 minutes`);
 }
 
-// Modified setupTwitterListener to include fallback
-export async function setupTwitterListener(agent: Agent) {
+// Modified setupTwitterListener to include db
+export async function setupTwitterListener(agent: Agent, db: any) {
   if (TWITTER_API_MODE === "paid") {
     console.log("TWITTER_APP_KEY: ", TWITTER_APP_KEY);
     console.log("TWITTER_APP_SECRET: ", TWITTER_APP_SECRET);
@@ -364,10 +431,10 @@ export async function setupTwitterListener(agent: Agent) {
     console.log(`Setting up Twitter listener for agent ${agent.agentId} in Paid mode`);
     console.log(`Setting up Twitter listener for twitterHandle ${agent.twitterHandle} in Paid mode`);
 
-    const streamSuccess = await setupTwitterStreamListenerPaid(agent);
+    const streamSuccess = await setupTwitterStreamListenerPaid(agent, db);
     if (!streamSuccess) {
       console.log(`Streaming setup failed for agent ${agent.agentId}, falling back to mentions timeline polling`);
-      await setupTwitterMentionsListenerPaid(agent);
+      await setupTwitterMentionsListenerPaid(agent, db);
     }
   } else if (TWITTER_API_MODE === "free") {
     console.log(`Setting up Twitter listener for agent ${agent.agentId} in Free mode`);
@@ -383,7 +450,7 @@ export async function setupTwitterListeners(db: any) {
     console.log("Fetching agents from database...");
     const agents = await db.collection("agents").find({
       isActive: true,
-      "settings.platforms": { $in: ["twitter"] }, // Relaxed to match arrays
+      "settings.platforms": { $in: ["twitter"] },
       twitterHandle: { $exists: true, $ne: "" },
       twitterAccessToken: { $exists: true, $ne: "" },
       twitterAccessSecret: { $exists: true, $ne: "" },
@@ -394,7 +461,7 @@ export async function setupTwitterListeners(db: any) {
     for (const agent of agents) {
       if (hasValidTwitterCredentials(agent)) {
         console.log(`Setting up listener for agent ${agent.agentId}`);
-        await setupTwitterListener(agent);
+        await setupTwitterListener(agent, db);
         if (agent.enablePostTweet === true && agent.agentType === "basic") {
           console.log(`Starting posting interval for agent ${agent.agentId}`);
           startPostingInterval(agent);
@@ -426,7 +493,8 @@ function stopTwitterPollListener(agentId: string) {
   try {
     const interval = pollingIntervals.get(agentId);
     if (interval) {
-      clearInterval(interval);
+      clearInterval(interval); // For setInterval
+      clearTimeout(interval); // For setTimeout, just in case
       pollingIntervals.delete(agentId);
       console.log(`Twitter poll listener stopped for agent ${agentId}`);
     } else {
@@ -500,7 +568,10 @@ export async function postRandomTweet(agent: Agent) {
 
     let tweetText = `Tweet from ${agent.name} at ${timestamp}`;
     if (response.choices && response.choices[0] && response.choices[0].message && response.choices[0].message.content) {
-      tweetText = response.choices[0].message.content.slice(0, 280);
+      tweetText = response.choices[0].message.content;
+      tweetText = tweetText.replace(/[\u{1F600}-\u{1F6FF}]/gu, '');
+      tweetText = tweetText.replace(/#\w+/g, '');
+      tweetText = tweetText.slice(0, 280);
     } else {
       console.warn(`OpenAI response missing content for agent ${agent.agentId}, using fallback`);
     }

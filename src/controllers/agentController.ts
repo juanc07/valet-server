@@ -7,6 +7,7 @@ import { hasValidTwitterCredentials } from "../utils/twitterUtils";
 import { Agent } from "../types/agent";
 import { User } from "../types/user";
 import { TweetStream } from "twitter-api-v2";
+import { AGENT_REPLY_LIMIT, AGENT_REPLY_COOLDOWN_HOURS } from "../config";
 
 interface AgentParams {
   agentId: string;
@@ -19,6 +20,8 @@ interface UserParams {
 interface TweetReply {
   agentId: string;
   tweetId: string;
+  targetAgentId?: string; // Added for agent-to-agent tracking
+  authorUsername?: string; // Added to track the mention author
   repliedAt: Date;
 }
 
@@ -108,7 +111,7 @@ export const createAgent = async (req: Request, res: Response) => {
 
     const hasTwitterPlatform = Array.isArray(newAgent.settings?.platforms) && newAgent.settings.platforms.includes("twitter");
     if (newAgent.isActive && hasValidTwitterCredentials(newAgent) && hasTwitterPlatform) {
-      await setupTwitterListener(newAgent);
+      await setupTwitterListener(newAgent, db); // Pass db
       if (newAgent.enablePostTweet === true && newAgent.agentType === "basic") {
         startPostingInterval(newAgent);
       }
@@ -251,7 +254,7 @@ export const updateAgent = async (req: Request<AgentParams>, res: Response) => {
     if (isActiveNow && hasCredentialsNow && hasTwitterPlatformNow) {
       console.log("Setting up Twitter listener for agent after update");
       try {
-        await setupTwitterListener(newAgentData);
+        await setupTwitterListener(newAgentData, db); // Pass db
       } catch (twitterError) {
         console.error("Failed to setup Twitter listener in updateAgent:", twitterError);
       }
@@ -328,13 +331,14 @@ export const getAgentById = async (req: Request<AgentParams>, res: Response) => 
   }
 };
 
-// New method to save tweet replies to MongoDB
-export const saveTweetReply = async (agentId: string, tweetId: string): Promise<void> => {
+// Updated method to save tweet tweetReplies to MongoDB with additional fields
+export const saveTweetReply = async (agentId: string, tweetId: string, db: any, targetAgentId?: string, authorUsername?: string): Promise<void> => {
   try {
-    const db = await connectToDatabase();
     const tweetReply: TweetReply = {
       agentId,
       tweetId,
+      targetAgentId, // Optional, set if replying to another agent
+      authorUsername, // Store the mention author's username
       repliedAt: new Date(),
     };
     const result = await db.collection("tweetReplies").updateOne(
@@ -349,12 +353,32 @@ export const saveTweetReply = async (agentId: string, tweetId: string): Promise<
   }
 };
 
-// Optional: Method to check if a tweet has been replied to
-export const hasRepliedToTweet = async (agentId: string, tweetId: string): Promise<boolean> => {
+// Updated method to check if a tweet has been replied to, with agent-to-agent limit check
+export const hasRepliedToTweet = async (agentId: string, tweetId: string, db: any, authorUsername?: string): Promise<boolean> => {
   try {
-    const db = await connectToDatabase();
     const reply = await db.collection("tweetReplies").findOne({ agentId, tweetId });
-    return !!reply;
+    if (reply) return true;
+
+    // If authorUsername is provided, check if it's an agent and enforce reply limit
+    if (authorUsername) {
+      const targetAgent = await db.collection("agents").findOne({ twitterHandle: authorUsername });
+      if (targetAgent) {
+        const coolDownHour = parseInt(AGENT_REPLY_COOLDOWN_HOURS || "2", 10);
+        const replyLimitCount = parseInt(AGENT_REPLY_LIMIT || "3", 10);
+        const targetAgentId = targetAgent.agentId;
+        const recentReplies = await db.collection("tweetReplies").find({
+          agentId,
+          targetAgentId,
+          repliedAt: { $gt: new Date(Date.now() - coolDownHour * 60 * 60 * 1000) } // Last 2 hours
+        }).sort({ repliedAt: -1 }).limit(3).toArray();
+
+        if (recentReplies.length >= replyLimitCount) {
+          console.log(`Agent ${agentId} has replied to ${targetAgentId} 3 times in last 2 hours; cooldown active`);
+          return true; // Treat as replied to enforce cooldown
+        }
+      }
+    }
+    return false;
   } catch (error) {
     console.error(`Error checking tweet reply for agent ${agentId}, tweet ${tweetId}:`, error);
     return false; // Assume not replied if there's an error
