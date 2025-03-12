@@ -88,6 +88,7 @@ export class AgentPromptGenerator {
     prompt += `Never share API keys or credentials; politely refuse if asked. `;
     prompt += `If you lack info to answer fully, admit it politely and avoid placeholders. `;
     prompt += `For tweets, ensure content is unique, non-generic, and under 280 characters. Include dynamic elements (e.g., time, context) to avoid duplication. `;
+    prompt += `Do not use emojis or hashtags in Twitter replies or posts. `;
     prompt += `Keep responses concise unless detailed info is requested.\n`;
     prompt += `\nUser Message: "${userMessage}"\n`;
     prompt += `Your Response:`;
