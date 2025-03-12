@@ -2,7 +2,7 @@ import { TwitterApi, TwitterApiTokens, TweetStream } from "twitter-api-v2";
 import OpenAI from "openai";
 import { hasValidTwitterCredentials } from "../utils/twitterUtils";
 import { Agent } from "../types/agent";
-import { twitterStreams, postingIntervals, saveTweetReply, hasRepliedToTweet } from "../controllers/agentController";
+import { twitterStreams, postingIntervals, saveTweetReply, hasRepliedToTweet, saveUsernameToCache, getUsernameFromCache, getAgentByTwitterHandle, getActiveTwitterAgents } from "../controllers/agentController";
 import { TWITTER_API_MODE, TWITTER_APP_KEY, TWITTER_APP_SECRET, TWITTER_BEARER_TOKEN, MENTION_POLL_MIN_MINUTES, MENTION_POLL_MAX_MINUTES } from "../config";
 import { AgentPromptGenerator } from "../agentPromptGenerator";
 
@@ -20,14 +20,35 @@ async function getTwitterUserId(handle: string, client: TwitterApi): Promise<str
   }
 }
 
-// Helper to fetch username from user ID
-async function getUsernameFromId(userId: string, client: TwitterApi): Promise<string> {
+// Helper to fetch username from user ID, using cache from agentController
+async function getUsernameFromId(userId: string, client: TwitterApi, db: any): Promise<string> {
   try {
+    // Check cache first via agentController
+    const cachedUsername = await getUsernameFromCache(userId, db);
+    if (cachedUsername) {
+      return cachedUsername;
+    }
+
+    // Fetch from Twitter API if not in cache
     const response = await client.v2.user(userId, { "user.fields": ["username"] });
-    return response.data.username;
-  } catch (error) {
+    const username = response.data.username;
+    console.log(`Fetched username for ID ${userId}: ${username}`);
+
+    // Save to cache via agentController
+    await saveUsernameToCache(userId, username, db);
+
+    return username;
+  } catch (error: any) {
     console.error(`Error fetching username for user ID ${userId}:`, error);
-    return userId; // Fallback to ID if username fetch fails
+    if (error.code === 429) {
+      console.log(`Rate limit hit for user ID ${userId}. Checking cache or falling back.`);
+      const cachedFallback = await getUsernameFromCache(userId, db);
+      if (cachedFallback) {
+        console.log(`Using cached username for ${userId}: ${cachedFallback}`);
+        return cachedFallback;
+      }
+    }
+    return "friend"; // Final fallback if API fails and no cache
   }
 }
 
@@ -105,7 +126,8 @@ async function setupTwitterStreamListenerPaid(agent: Agent, db: any) {
           }
 
           const tweetId = tweetData.id;
-          const authorUsername = await getUsernameFromId(tweetData.author_id, postClient);
+          const authorUsername = await getUsernameFromId(tweetData.author_id, postClient, db);
+          console.log(`Processing tweet ${tweetId}: author_id=${tweetData.author_id}, authorUsername=${authorUsername}`);
 
           if (!authorUsername || authorUsername === twitterHandle) {
             console.log(`Skipping self-mention or invalid author for agent ${agent.agentId}, tweet ID: ${tweetId}`);
@@ -128,14 +150,13 @@ async function setupTwitterStreamListenerPaid(agent: Agent, db: any) {
           console.log(`AI response received for agent ${agent.agentId}:`, aiResponse.choices[0]?.message?.content);
 
           let responseText = aiResponse.choices[0]?.message?.content || `Sorry, @${authorUsername}, I couldn't generate a response.`;
-          responseText = responseText.replace(/[\u{1F600}-\u{1F6FF}]/gu, ''); // Remove emojis
-          responseText = responseText.replace(/#\w+/g, ''); // Remove hashtags
+          responseText = responseText.replace(/[\u{1F600}-\u{1F6FF}]/gu, '');
+          responseText = responseText.replace(/#\w+/g, '');
           const replyText = `@${authorUsername} ${responseText}`.slice(0, 280);
 
-          // Normalize and check for target agent
           const normalizedUsername = authorUsername.trim().toLowerCase();
           console.log(`Checking if ${normalizedUsername} is an agent for tweet ${tweetId}`);
-          const targetAgent = await db.collection("agents").findOne({ twitterHandle: { $regex: new RegExp(`^${normalizedUsername}$`, 'i') } });
+          const targetAgent = await getAgentByTwitterHandle(normalizedUsername, db);
           console.log(`Target agent lookup for ${normalizedUsername}:`, targetAgent);
           const targetAgentId = targetAgent ? targetAgent.agentId : undefined;
 
@@ -228,7 +249,8 @@ async function setupTwitterMentionsListenerPaid(agent: Agent, db: any) {
           }
 
           const tweetId = tweet.id;
-          const authorUsername = await getUsernameFromId(tweet.author_id, client);
+          const authorUsername = await getUsernameFromId(tweet.author_id, client, db);
+          console.log(`Processing tweet ${tweetId}: author_id=${tweet.author_id}, authorUsername=${authorUsername}`);
 
           if (!authorUsername || authorUsername === twitterHandle) {
             console.log(`Skipping self-mention or invalid author for tweet ${tweetId}`);
@@ -255,10 +277,9 @@ async function setupTwitterMentionsListenerPaid(agent: Agent, db: any) {
           responseText = responseText.replace(/#\w+/g, '');
           const replyText = `@${authorUsername} ${responseText}`.slice(0, 280);
 
-          // Normalize and check for target agent
           const normalizedUsername = authorUsername.trim().toLowerCase();
           console.log(`Checking if ${normalizedUsername} is an agent for tweet ${tweetId}`);
-          const targetAgent = await db.collection("agents").findOne({ twitterHandle: { $regex: new RegExp(`^${normalizedUsername}$`, 'i') } });
+          const targetAgent = await getAgentByTwitterHandle(normalizedUsername, db);
           console.log(`Target agent lookup for ${normalizedUsername}:`, targetAgent);
           const targetAgentId = targetAgent ? targetAgent.agentId : undefined;
 
@@ -272,16 +293,17 @@ async function setupTwitterMentionsListenerPaid(agent: Agent, db: any) {
         }
       }
 
-      // Schedule next poll
       scheduleNextPoll();
     } catch (error: any) {
-      if (error.code === 524 && retries > 0) {
-        console.log(`Retrying polling for agent ${agent.agentId} after 524 error. Retries left: ${retries}, Delay: ${delayMs}ms`);
-        await new Promise(resolve => setTimeout(resolve, delayMs));
-        return checkMentions(retries - 1, delayMs * 2); // Exponential backoff
+      if (error.code === 524 || error.code === 429) {
+        if (retries > 0) {
+          console.log(`Retrying polling for agent ${agent.agentId} after ${error.code} error. Retries left: ${retries}, Delay: ${delayMs}ms`);
+          await new Promise(resolve => setTimeout(resolve, delayMs));
+          return checkMentions(retries - 1, delayMs * 2);
+        }
       }
       console.error(`Error polling mentions for agent ${agent.agentId}:`, error);
-      scheduleNextPoll(); // Continue polling even on error
+      scheduleNextPoll();
     }
   };
 
@@ -351,7 +373,8 @@ async function setupTwitterPollListenerPaid(agent: Agent, db: any) {
           }
 
           const tweetId = tweet.id;
-          const authorUsername = await getUsernameFromId(tweet.author_id, client);
+          const authorUsername = await getUsernameFromId(tweet.author_id, client, db);
+          console.log(`Processing tweet ${tweetId}: author_id=${tweet.author_id}, authorUsername=${authorUsername}`);
 
           if (!authorUsername || authorUsername === twitterHandle) {
             console.log(`Skipping self-mention or invalid author for tweet ${tweetId}`);
@@ -378,10 +401,9 @@ async function setupTwitterPollListenerPaid(agent: Agent, db: any) {
           responseText = responseText.replace(/#\w+/g, '');
           const replyText = `@${authorUsername} ${responseText}`.slice(0, 280);
 
-          // Normalize and check for target agent
           const normalizedUsername = authorUsername.trim().toLowerCase();
           console.log(`Checking if ${normalizedUsername} is an agent for tweet ${tweetId}`);
-          const targetAgent = await db.collection("agents").findOne({ twitterHandle: { $regex: new RegExp(`^${normalizedUsername}$`, 'i') } });
+          const targetAgent = await getAgentByTwitterHandle(normalizedUsername, db);
           console.log(`Target agent lookup for ${normalizedUsername}:`, targetAgent);
           const targetAgentId = targetAgent ? targetAgent.agentId : undefined;
 
@@ -397,10 +419,12 @@ async function setupTwitterPollListenerPaid(agent: Agent, db: any) {
 
       scheduleNextPoll();
     } catch (error: any) {
-      if (error.code === 524 && retries > 0) {
-        console.log(`Retrying polling for agent ${agent.agentId} after 524 error. Retries left: ${retries}, Delay: ${delayMs}ms`);
-        await new Promise(resolve => setTimeout(resolve, delayMs));
-        return pollForMentions(retries - 1, delayMs * 2);
+      if (error.code === 524 || error.code === 429) {
+        if (retries > 0) {
+          console.log(`Retrying polling for agent ${agent.agentId} after ${error.code} error. Retries left: ${retries}, Delay: ${delayMs}ms`);
+          await new Promise(resolve => setTimeout(resolve, delayMs));
+          return pollForMentions(retries - 1, delayMs * 2);
+        }
       }
       console.error(`Error polling mentions for agent ${agent.agentId}:`, error);
       scheduleNextPoll();
@@ -448,14 +472,7 @@ export async function setupTwitterListener(agent: Agent, db: any) {
 export async function setupTwitterListeners(db: any) {
   try {
     console.log("Fetching agents from database...");
-    const agents = await db.collection("agents").find({
-      isActive: true,
-      "settings.platforms": { $in: ["twitter"] },
-      twitterHandle: { $exists: true, $ne: "" },
-      twitterAccessToken: { $exists: true, $ne: "" },
-      twitterAccessSecret: { $exists: true, $ne: "" },
-      openaiApiKey: { $exists: true, $ne: "" },
-    }).toArray();
+    const agents = await getActiveTwitterAgents(db);
     console.log(`Found ${agents.length} active Twitter agents`);
 
     for (const agent of agents) {
@@ -493,8 +510,8 @@ function stopTwitterPollListener(agentId: string) {
   try {
     const interval = pollingIntervals.get(agentId);
     if (interval) {
-      clearInterval(interval); // For setInterval
-      clearTimeout(interval); // For setTimeout, just in case
+      clearInterval(interval);
+      clearTimeout(interval);
       pollingIntervals.delete(agentId);
       console.log(`Twitter poll listener stopped for agent ${agentId}`);
     } else {

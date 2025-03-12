@@ -25,6 +25,74 @@ interface TweetReply {
   repliedAt: Date;
 }
 
+// TTL for MongoDB cache (24 hours in milliseconds)
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+// Save username to MongoDB cache
+export const saveUsernameToCache = async (userId: string, username: string, db: any): Promise<void> => {
+  try {
+    const now = Date.now();
+    await db.collection("usernameCache").updateOne(
+      { userId },
+      { $set: { username, timestamp: now } },
+      { upsert: true }
+    );
+    console.log(`Saved username ${username} for user ID ${userId} to MongoDB cache`);
+  } catch (error) {
+    console.error(`Error saving username for user ID ${userId} to cache:`, error);
+  }
+};
+
+// Fetch username from cache or return null if not found/expired
+export const getUsernameFromCache = async (userId: string, db: any): Promise<string | null> => {
+  try {
+    const cached = await db.collection("usernameCache").findOne({ userId });
+    const now = Date.now();
+    if (cached && now - cached.timestamp < CACHE_TTL_MS) {
+      console.log(`MongoDB cache hit for user ID ${userId}: ${cached.username}`);
+      return cached.username;
+    }
+    return null; // Cache miss or expired
+  } catch (error) {
+    console.error(`Error fetching username from cache for user ID ${userId}:`, error);
+    return null;
+  }
+};
+
+// Fetch agent by Twitter handle
+export const getAgentByTwitterHandle = async (twitterHandle: string, db: any): Promise<Agent | null> => {
+  try {
+    const normalizedHandle = twitterHandle.trim().toLowerCase();
+    const agent = await db.collection("agents").findOne({ 
+      twitterHandle: { $regex: new RegExp(`^${normalizedHandle}$`, 'i') } 
+    });
+    console.log(`Agent lookup for ${twitterHandle}: ${agent ? 'Found' : 'Not found'}`);
+    return agent;
+  } catch (error) {
+    console.error(`Error fetching agent by Twitter handle ${twitterHandle}:`, error);
+    return null;
+  }
+};
+
+// Fetch active Twitter agents
+export const getActiveTwitterAgents = async (db: any): Promise<Agent[]> => {
+  try {
+    const agents = await db.collection("agents").find({
+      isActive: true,
+      "settings.platforms": { $in: ["twitter"] },
+      twitterHandle: { $exists: true, $ne: "" },
+      twitterAccessToken: { $exists: true, $ne: "" },
+      twitterAccessSecret: { $exists: true, $ne: "" },
+      openaiApiKey: { $exists: true, $ne: "" },
+    }).toArray();
+    console.log(`Found ${agents.length} active Twitter agents`);
+    return agents;
+  } catch (error) {
+    console.error("Error fetching active Twitter agents:", error);
+    return [];
+  }
+};
+
 export const createAgent = async (req: Request, res: Response) => {
   console.log("1st createAgent");
   try {
@@ -331,7 +399,7 @@ export const getAgentById = async (req: Request<AgentParams>, res: Response) => 
   }
 };
 
-// Updated method to save tweet tweetReplies to MongoDB with additional fields
+// Updated method to save tweet replies to MongoDB with additional fields
 export const saveTweetReply = async (agentId: string, tweetId: string, db: any, targetAgentId?: string, authorUsername?: string): Promise<void> => {
   try {
     const tweetReply: TweetReply = {
@@ -361,7 +429,7 @@ export const hasRepliedToTweet = async (agentId: string, tweetId: string, db: an
 
     // If authorUsername is provided, check if it's an agent and enforce reply limit
     if (authorUsername) {
-      const targetAgent = await db.collection("agents").findOne({ twitterHandle: authorUsername });
+      const targetAgent = await getAgentByTwitterHandle(authorUsername, db);
       if (targetAgent) {
         const coolDownHour = parseInt(AGENT_REPLY_COOLDOWN_HOURS || "2", 10);
         const replyLimitCount = parseInt(AGENT_REPLY_LIMIT || "3", 10);
