@@ -9,6 +9,7 @@ import { AgentPromptGenerator } from "../agentPromptGenerator";
 // Helper to fetch Twitter user ID from handle
 async function getTwitterUserId(handle: string, client: TwitterApi): Promise<string | undefined> {
   try {
+    console.log(`Attempting to fetch user ID for handle ${handle}`);
     const response = await client.v2.userByUsername(handle.replace('@', ''), {
       "user.fields": ["id"],
     });
@@ -23,37 +24,40 @@ async function getTwitterUserId(handle: string, client: TwitterApi): Promise<str
 // Helper to fetch username from user ID, using cache from agentController
 async function getUsernameFromId(userId: string, client: TwitterApi, db: any): Promise<string> {
   try {
-    // Check cache first via agentController
+    console.log(`Looking up username for user ID ${userId}`);
     const cachedUsername = await getUsernameFromCache(userId, db);
     if (cachedUsername) {
+      console.log(`Cache hit for user ID ${userId}: ${cachedUsername}`);
       return cachedUsername;
     }
 
-    // Fetch from Twitter API if not in cache
+    console.log(`Cache miss, fetching username from Twitter API for user ID ${userId}`);
     const response = await client.v2.user(userId, { "user.fields": ["username"] });
     const username = response.data.username;
     console.log(`Fetched username for ID ${userId}: ${username}`);
 
-    // Save to cache via agentController
+    console.log(`Saving username ${username} to cache for user ID ${userId}`);
     await saveUsernameToCache(userId, username, db);
 
     return username;
   } catch (error: any) {
     console.error(`Error fetching username for user ID ${userId}:`, error);
     if (error.code === 429) {
-      console.log(`Rate limit hit for user ID ${userId}. Checking cache or falling back.`);
+      console.log(`Rate limit hit for user ID ${userId}. Falling back to cache`);
       const cachedFallback = await getUsernameFromCache(userId, db);
       if (cachedFallback) {
         console.log(`Using cached username for ${userId}: ${cachedFallback}`);
         return cachedFallback;
       }
     }
-    return "friend"; // Final fallback if API fails and no cache
+    console.log(`No cache available, falling back to default 'friend' for user ID ${userId}`);
+    return "friend";
   }
 }
 
 // Free tier: No streaming or polling for mentions, just posting
 async function setupTwitterPollListenerFree(agent: Agent) {
+  console.log(`Checking credentials for free tier setup for agent ${agent.agentId}`);
   if (!hasValidTwitterCredentials(agent)) {
     console.log(`Cannot setup Twitter listener for agent ${agent.agentId}: Invalid Twitter credentials`);
     return;
@@ -63,6 +67,7 @@ async function setupTwitterPollListenerFree(agent: Agent) {
 
 // Paid tier (Basic): Real-time streaming with Filtered Stream for mentions using Bearer Token
 async function setupTwitterStreamListenerPaid(agent: Agent, db: any) {
+  console.log(`Setting up paid streaming for agent ${agent.agentId}`);
   if (!TWITTER_BEARER_TOKEN) {
     console.log(`Cannot setup Twitter stream listener for agent ${agent.agentId}: Missing TWITTER_BEARER_TOKEN in environment`);
     return false;
@@ -118,7 +123,7 @@ async function setupTwitterStreamListenerPaid(agent: Agent, db: any) {
 
       stream.on("data", async (tweet) => {
         try {
-          console.log(`Raw tweet data for agent ${agent.agentId}:`, JSON.stringify(tweet, null, 2));
+          console.log(`Received tweet data for agent ${agent.agentId}:`, JSON.stringify(tweet, null, 2));
           const tweetData = tweet.data || tweet;
           if (!tweetData.author_id) {
             console.error(`No author_id found in tweet for agent ${agent.agentId}:`, tweetData);
@@ -136,13 +141,16 @@ async function setupTwitterStreamListenerPaid(agent: Agent, db: any) {
 
           const hasReplied = await hasRepliedToTweet(agent.agentId, tweetId, db, authorUsername);
           if (hasReplied) {
-            console.log(`Skipping tweet ${tweetId} for agent ${agent.agentId}: ${hasReplied ? 'Already replied or cooldown active' : 'No reply yet'}`);
+            console.log(`Skipping tweet ${tweetId} for agent ${agent.agentId}: Already replied or cooldown active`);
             return;
           }
 
+          console.log(`Generating prompt for reply to tweet ${tweetId} for agent ${agent.agentId}`);
           const promptGenerator = new AgentPromptGenerator(agent);
           const prompt = promptGenerator.generatePrompt(`Reply to this mention from @${authorUsername}: "${tweetData.text}"\nPersonalize your response by addressing @${authorUsername} directly.`);
           console.log(`Generated prompt for agent ${agent.agentId}: ${prompt}`);
+
+          console.log(`Requesting AI response for agent ${agent.agentId}, tweet ${tweetId}`);
           const aiResponse = await openai.chat.completions.create({
             model: "gpt-3.5-turbo",
             messages: [{ role: "user", content: prompt }],
@@ -153,6 +161,7 @@ async function setupTwitterStreamListenerPaid(agent: Agent, db: any) {
           responseText = responseText.replace(/[\u{1F600}-\u{1F6FF}]/gu, '');
           responseText = responseText.replace(/#\w+/g, '');
           const replyText = `@${authorUsername} ${responseText}`.slice(0, 280);
+          console.log(`Prepared reply text for tweet ${tweetId}: ${replyText}`);
 
           const normalizedUsername = authorUsername.trim().toLowerCase();
           console.log(`Checking if ${normalizedUsername} is an agent for tweet ${tweetId}`);
@@ -160,13 +169,16 @@ async function setupTwitterStreamListenerPaid(agent: Agent, db: any) {
           console.log(`Target agent lookup for ${normalizedUsername}:`, targetAgent);
           const targetAgentId = targetAgent ? targetAgent.agentId : undefined;
 
+          console.log(`Posting reply to tweet ${tweetId} for agent ${agent.agentId}`);
           await postClient.v2.tweet({
             text: replyText,
             reply: { in_reply_to_tweet_id: tweetId },
           });
           console.log(`Agent ${agent.agentId} replied to tweet ${tweetId}: ${replyText}`);
 
+          console.log(`Saving reply record for tweet ${tweetId} by agent ${agent.agentId}`);
           await saveTweetReply(agent.agentId, tweetId, db, targetAgentId, authorUsername);
+          console.log(`Reply saved for tweet ${tweetId} by agent ${agent.agentId}`);
         } catch (error) {
           console.error(`Error processing mention for agent ${agent.agentId}, tweet ID: ${(tweet.data || tweet).id || 'unknown'}:`, error);
         }
@@ -196,6 +208,7 @@ async function setupTwitterStreamListenerPaid(agent: Agent, db: any) {
 
 // Fallback to User Mention Timeline polling with retry logic
 async function setupTwitterMentionsListenerPaid(agent: Agent, db: any) {
+  console.log(`Setting up paid mentions polling for agent ${agent.agentId}`);
   if (!hasValidTwitterCredentials(agent)) {
     console.log(`Cannot setup Twitter mentions listener for agent ${agent.agentId}: Invalid Twitter credentials`);
     return;
@@ -216,7 +229,7 @@ async function setupTwitterMentionsListenerPaid(agent: Agent, db: any) {
   const client = new TwitterApi(twitterTokens);
   const openai = new OpenAI({ apiKey: agent.openaiApiKey });
 
-  console.log(`Fetching Twitter user ID for handle ${twitterHandle}...`);
+  console.log(`Fetching Twitter user ID for handle ${twitterHandle} for agent ${agent.agentId}`);
   const twitterUserId = await getTwitterUserId(twitterHandle, client);
   if (!twitterUserId) {
     console.log(`Failed to fetch Twitter user ID for agent ${agent.agentId}`);
@@ -224,7 +237,6 @@ async function setupTwitterMentionsListenerPaid(agent: Agent, db: any) {
   }
 
   console.log(`Mentions listener initialized for agent ${agent.agentId} with user ID ${twitterUserId}`);
-
   let sinceId: string | undefined;
 
   const checkMentions = async (retries = 3, delayMs = 5000) => {
@@ -259,13 +271,16 @@ async function setupTwitterMentionsListenerPaid(agent: Agent, db: any) {
 
           const hasReplied = await hasRepliedToTweet(agent.agentId, tweetId, db, authorUsername);
           if (hasReplied) {
-            console.log(`Skipping tweet ${tweetId} for agent ${agent.agentId}: ${hasReplied ? 'Already replied or cooldown active' : 'No reply yet'}`);
+            console.log(`Skipping tweet ${tweetId} for agent ${agent.agentId}: Already replied or cooldown active`);
             continue;
           }
 
+          console.log(`Generating prompt for reply to tweet ${tweetId} for agent ${agent.agentId}`);
           const promptGenerator = new AgentPromptGenerator(agent);
           const prompt = promptGenerator.generatePrompt(`Reply to this mention from @${authorUsername}: "${tweet.text}"\nPersonalize your response by addressing @${authorUsername} directly.`);
           console.log(`Generated prompt for tweet ${tweetId}: ${prompt}`);
+
+          console.log(`Requesting AI response for tweet ${tweetId} for agent ${agent.agentId}`);
           const aiResponse = await openai.chat.completions.create({
             model: "gpt-3.5-turbo",
             messages: [{ role: "user", content: prompt }],
@@ -276,6 +291,7 @@ async function setupTwitterMentionsListenerPaid(agent: Agent, db: any) {
           responseText = responseText.replace(/[\u{1F600}-\u{1F6FF}]/gu, '');
           responseText = responseText.replace(/#\w+/g, '');
           const replyText = `@${authorUsername} ${responseText}`.slice(0, 280);
+          console.log(`Prepared reply text for tweet ${tweetId}: ${replyText}`);
 
           const normalizedUsername = authorUsername.trim().toLowerCase();
           console.log(`Checking if ${normalizedUsername} is an agent for tweet ${tweetId}`);
@@ -283,13 +299,16 @@ async function setupTwitterMentionsListenerPaid(agent: Agent, db: any) {
           console.log(`Target agent lookup for ${normalizedUsername}:`, targetAgent);
           const targetAgentId = targetAgent ? targetAgent.agentId : undefined;
 
+          console.log(`Posting reply to tweet ${tweetId} for agent ${agent.agentId}`);
           await client.v2.tweet({
             text: replyText,
             reply: { in_reply_to_tweet_id: tweetId },
           });
           console.log(`Agent ${agent.agentId} replied to tweet ${tweetId}: ${replyText}`);
 
+          console.log(`Saving reply record for tweet ${tweetId} by agent ${agent.agentId}`);
           await saveTweetReply(agent.agentId, tweetId, db, targetAgentId, authorUsername);
+          console.log(`Reply saved for tweet ${tweetId} by agent ${agent.agentId}`);
         }
       }
 
@@ -326,6 +345,7 @@ async function setupTwitterMentionsListenerPaid(agent: Agent, db: any) {
 
 // Fallback polling for paid tier if streaming isn’t desired or fails
 async function setupTwitterPollListenerPaid(agent: Agent, db: any) {
+  console.log(`Setting up paid polling for agent ${agent.agentId}`);
   if (!hasValidTwitterCredentials(agent)) {
     console.log(`Cannot setup Twitter poll listener for agent ${agent.agentId}: Invalid Twitter credentials`);
     return;
@@ -383,13 +403,16 @@ async function setupTwitterPollListenerPaid(agent: Agent, db: any) {
 
           const hasReplied = await hasRepliedToTweet(agent.agentId, tweetId, db, authorUsername);
           if (hasReplied) {
-            console.log(`Skipping tweet ${tweetId} for agent ${agent.agentId}: ${hasReplied ? 'Already replied or cooldown active' : 'No reply yet'}`);
+            console.log(`Skipping tweet ${tweetId} for agent ${agent.agentId}: Already replied or cooldown active`);
             continue;
           }
 
+          console.log(`Generating prompt for reply to tweet ${tweetId} for agent ${agent.agentId}`);
           const promptGenerator = new AgentPromptGenerator(agent);
           const prompt = promptGenerator.generatePrompt(`Reply to this mention from @${authorUsername}: "${tweet.text}"\nPersonalize your response by addressing @${authorUsername} directly.`);
           console.log(`Generated prompt for tweet ${tweetId}: ${prompt}`);
+
+          console.log(`Requesting AI response for tweet ${tweetId} for agent ${agent.agentId}`);
           const aiResponse = await openai.chat.completions.create({
             model: "gpt-3.5-turbo",
             messages: [{ role: "user", content: prompt }],
@@ -400,6 +423,7 @@ async function setupTwitterPollListenerPaid(agent: Agent, db: any) {
           responseText = responseText.replace(/[\u{1F600}-\u{1F6FF}]/gu, '');
           responseText = responseText.replace(/#\w+/g, '');
           const replyText = `@${authorUsername} ${responseText}`.slice(0, 280);
+          console.log(`Prepared reply text for tweet ${tweetId}: ${replyText}`);
 
           const normalizedUsername = authorUsername.trim().toLowerCase();
           console.log(`Checking if ${normalizedUsername} is an agent for tweet ${tweetId}`);
@@ -407,13 +431,16 @@ async function setupTwitterPollListenerPaid(agent: Agent, db: any) {
           console.log(`Target agent lookup for ${normalizedUsername}:`, targetAgent);
           const targetAgentId = targetAgent ? targetAgent.agentId : undefined;
 
+          console.log(`Posting reply to tweet ${tweetId} for agent ${agent.agentId}`);
           await client.v2.tweet({
             text: replyText,
             reply: { in_reply_to_tweet_id: tweetId },
           });
           console.log(`Agent ${agent.agentId} replied to tweet ${tweetId}: ${replyText}`);
 
+          console.log(`Saving reply record for tweet ${tweetId} by agent ${agent.agentId}`);
           await saveTweetReply(agent.agentId, tweetId, db, targetAgentId, authorUsername);
+          console.log(`Reply saved for tweet ${tweetId} by agent ${agent.agentId}`);
         }
       }
 
@@ -446,6 +473,7 @@ async function setupTwitterPollListenerPaid(agent: Agent, db: any) {
 
 // Modified setupTwitterListener to include db
 export async function setupTwitterListener(agent: Agent, db: any) {
+  console.log(`Starting Twitter listener setup for agent ${agent.agentId}`);
   if (TWITTER_API_MODE === "paid") {
     console.log("TWITTER_APP_KEY: ", TWITTER_APP_KEY);
     console.log("TWITTER_APP_SECRET: ", TWITTER_APP_SECRET);
@@ -467,6 +495,7 @@ export async function setupTwitterListener(agent: Agent, db: any) {
   } else {
     console.error(`Invalid TWITTER_API_MODE: ${TWITTER_API_MODE}. Expected "free" or "paid".`);
   }
+  console.log(`Twitter listener setup completed for agent ${agent.agentId}`);
 }
 
 export async function setupTwitterListeners(db: any) {
@@ -493,6 +522,7 @@ export async function setupTwitterListeners(db: any) {
 }
 
 export async function stopTwitterListener(agentId: string) {
+  console.log(`Attempting to stop Twitter listener for agent ${agentId}`);
   if (TWITTER_API_MODE === "paid") {
     console.log(`Stopping Twitter listener for agent ${agentId} in Paid mode`);
     stopTwitterStreamListener(agentId);
@@ -502,12 +532,14 @@ export async function stopTwitterListener(agentId: string) {
   } else {
     console.error(`Invalid TWITTER_API_MODE: ${TWITTER_API_MODE}. Cannot stop listener.`);
   }
+  console.log(`Twitter listener stopped for agent ${agentId}`);
 }
 
 const pollingIntervals = new Map<string, NodeJS.Timeout>();
 
 function stopTwitterPollListener(agentId: string) {
   try {
+    console.log(`Stopping Twitter poll listener for agent ${agentId}`);
     const interval = pollingIntervals.get(agentId);
     if (interval) {
       clearInterval(interval);
@@ -524,9 +556,10 @@ function stopTwitterPollListener(agentId: string) {
 
 function stopTwitterStreamListener(agentId: string) {
   try {
+    console.log(`Stopping Twitter stream listener for agent ${agentId}`);
     const stream = twitterStreams.get(agentId);
     if (stream) {
-      console.log(`Stopping Twitter stream for agent ${agentId}`);
+      console.log(`Found active stream for agent ${agentId}, stopping it`);
       stream.autoReconnect = false;
       stream.destroy();
       twitterStreams.delete(agentId);
@@ -541,6 +574,7 @@ function stopTwitterStreamListener(agentId: string) {
 
 export function stopPostingInterval(agentId: string) {
   try {
+    console.log(`Stopping posting interval for agent ${agentId}`);
     const interval = postingIntervals.get(agentId);
     if (interval) {
       clearInterval(interval);
@@ -555,6 +589,7 @@ export function stopPostingInterval(agentId: string) {
 }
 
 export async function postRandomTweet(agent: Agent) {
+  console.log(`Starting random tweet posting for agent ${agent.agentId}`);
   if (!hasValidTwitterCredentials(agent)) {
     console.log(`Cannot post tweet for agent ${agent.agentId}: Invalid Twitter credentials`);
     return;
@@ -577,11 +612,12 @@ export async function postRandomTweet(agent: Agent) {
   console.log(`Generated prompt for random tweet for agent ${agent.agentId}: ${prompt}`);
 
   try {
+    console.log(`Requesting OpenAI response for tweet for agent ${agent.agentId}`);
     const response = await openai.chat.completions.create({
       model: "gpt-3.5-turbo",
       messages: [{ role: "user", content: prompt }],
     });
-    console.log(`OpenAI response for agent ${agent.agentId}:`, response.choices[0]?.message?.content);
+    console.log(`OpenAI response received for agent ${agent.agentId}:`, response.choices[0]?.message?.content);
 
     let tweetText = `Tweet from ${agent.name} at ${timestamp}`;
     if (response.choices && response.choices[0] && response.choices[0].message && response.choices[0].message.content) {
@@ -589,22 +625,30 @@ export async function postRandomTweet(agent: Agent) {
       tweetText = tweetText.replace(/[\u{1F600}-\u{1F6FF}]/gu, '');
       tweetText = tweetText.replace(/#\w+/g, '');
       tweetText = tweetText.slice(0, 280);
+      console.log(`Processed tweet text for agent ${agent.agentId}: ${tweetText}`);
     } else {
-      console.warn(`OpenAI response missing content for agent ${agent.agentId}, using fallback`);
+      console.warn(`OpenAI response missing content for agent ${agent.agentId}, using fallback: ${tweetText}`);
     }
 
+    console.log(`Attempting to post tweet for agent ${agent.agentId}: ${tweetText}`);
     await twitterClient.v2.tweet({ text: tweetText });
-    console.log(`Agent ${agent.agentId} posted: ${tweetText}`);
-  } catch (error) {
+    console.log(`Agent ${agent.agentId} successfully posted: ${tweetText}`);
+  } catch (error: any) {
     console.error(`Failed to post tweet for agent ${agent.agentId}:`, error);
-    throw error;
+    if (error.code === 403) {
+      console.log(`Twitter API denied write access for agent ${agent.agentId}. Check app permissions at https://developer.twitter.com`);
+    } else if (error.code === 524) {
+      console.log(`Twitter API timed out (524) for agent ${agent.agentId}. Possible server issue`);
+    }
+    // No throw; process continues
   }
 }
 
 export async function postTweet(agent: Agent, message?: string) {
+  console.log(`Starting manual tweet posting for agent ${agent.agentId}`);
   if (!hasValidTwitterCredentials(agent)) {
     console.log(`Cannot post tweet for agent ${agent.agentId}: Invalid Twitter credentials`);
-    throw new Error("Invalid Twitter credentials");
+    return null; // Changed from throw to prevent crash
   }
 
   const twitterTokens: TwitterApiTokens = {
@@ -617,18 +661,26 @@ export async function postTweet(agent: Agent, message?: string) {
   console.log(`Initialized Twitter client for manual tweet posting for agent ${agent.agentId}`);
 
   const tweetMessage = message || `Manual tweet from ${agent.name} at ${new Date().toISOString()}`;
+  console.log(`Prepared tweet message for agent ${agent.agentId}: ${tweetMessage}`);
 
   try {
+    console.log(`Attempting to post tweet for agent ${agent.agentId}: ${tweetMessage}`);
     await twitterClient.v2.tweet({ text: tweetMessage });
     console.log(`Agent ${agent.agentId} manually posted: ${tweetMessage}`);
     return tweetMessage;
-  } catch (error) {
+  } catch (error: any) {
     console.error(`Failed to manually post tweet for agent ${agent.agentId}:`, error);
-    throw error;
+    if (error.code === 403) {
+      console.log(`Twitter API denied write access for agent ${agent.agentId}. Check app permissions at https://developer.twitter.com`);
+    } else if (error.code === 524) {
+      console.log(`Twitter API timed out (524) for agent ${agent.agentId}. Possible server issue`);
+    }
+    return null; // Indicate failure without crashing
   }
 }
 
 export function startPostingInterval(agent: Agent) {
+  console.log(`Starting posting interval setup for agent ${agent.agentId}`);
   if (!hasValidTwitterCredentials(agent)) {
     console.log(`Cannot start posting interval for agent ${agent.agentId}: Invalid Twitter credentials`);
     return;
@@ -637,7 +689,15 @@ export function startPostingInterval(agent: Agent) {
   try {
     stopPostingInterval(agent.agentId);
     const intervalSeconds = agent.postTweetInterval ?? 3600;
-    const interval = setInterval(() => postRandomTweet(agent), intervalSeconds * 1000);
+    const interval = setInterval(async () => {
+      try {
+        console.log(`Interval triggered for agent ${agent.agentId} at ${new Date().toISOString()}`);
+        await postRandomTweet(agent);
+        console.log(`Interval completed for agent ${agent.agentId}`);
+      } catch (error) {
+        console.error(`Error in posting interval for agent ${agent.agentId}:`, error);
+      }
+    }, intervalSeconds * 1000);
     postingIntervals.set(agent.agentId, interval);
     console.log(`Started posting interval for agent ${agent.agentId} every ${intervalSeconds} seconds`);
   } catch (error) {

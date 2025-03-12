@@ -1,9 +1,9 @@
 # Valet Server
 
-The Valet Server is a Node.js and MongoDB-powered backend for the Valet Web App. This guide will help you set up and run the server on your machine.
+The Valet Server is a Node.js and MongoDB-powered backend for the Valet Web App. This guide helps you set up and run the server locally.
 
 ## Important Note
-The Valet app consists of two parts: this server and a separate client. The client relies on the server, so **always start the server first** when testing. For client setup, refer to the [Valet Client README](https://github.com/juanc07/valet-client).
+The Valet app has two parts: this server and a separate client. The client depends on the server, so **start the server first** when testing. See the [Valet Client README](https://github.com/juanc07/valet-client) for client setup.
 
 ## Repositories
 - **Server**: [https://github.com/juanc07/valet-server](https://github.com/juanc07/valet-server)  
@@ -13,88 +13,102 @@ The Valet app consists of two parts: this server and a separate client. The clie
 
 ## Prerequisites
 
-Before you begin, install the following tools:
+Install these tools before proceeding:
 
 1. **Node.js**  
-   - Install the latest LTS version from [nodejs.org](https://nodejs.org/).  
-   - Confirm it’s working:  
+   - Get the latest LTS version from [nodejs.org](https://nodejs.org/).  
+   - Verify:  
      ```bash
      node -v
      ```
 
-2. **npm (Node Package Manager)**  
-   - Included with Node.js, but update it globally for the latest version:  
+2. **pnpm (Node Package Manager)**  
+   - Install globally (not included with Node.js):  
      ```bash
-     npm install -g npm
+     pnpm install -g pnpm
      ```
-   - Verify:  
+   - Check version:  
      ```bash
-     npm -v
+     pnpm -v
      ```
 
 3. **MongoDB Community Edition**  
    - Download from [mongodb.com](https://www.mongodb.com/try/download/community).  
-   - Install based on your OS:  
+   - Install per your OS:  
      - **Windows**: Use the MSI installer.  
-     - **MacOS**: Run `brew install mongodb-community` (requires Homebrew).  
-     - **Linux**: Example for Ubuntu: `sudo apt-get install mongodb`.  
+     - **MacOS**: `brew install mongodb-community` (requires Homebrew).  
+     - **Linux**: E.g., `sudo apt-get install mongodb` (Ubuntu).  
    - Start MongoDB:  
      ```bash
      mongod
      ```
-     (Run in a separate terminal or configure it as a background service.)
+     (Run in a separate terminal or set up as a service.)
 
 4. **MongoDB Compass (Optional)**  
-   - Download from [mongodb.com/products/compass](https://www.mongodb.com/products/compass).  
-   - Use this GUI to inspect or manage your MongoDB database.  
-   - Connect to `mongodb://localhost:27017` (default) or your custom URI.
+   - Get from [mongodb.com/products/compass](https://www.mongodb.com/products/compass).  
+   - Use this GUI to manage your MongoDB database.  
+   - Connect to `mongodb://localhost:27017` (default).
 
 ---
 
 ## Setup Instructions
 
-Follow these steps to set up the server:
-
 1. **Clone the Repository**  
    - Ensure Git is installed (`git --version`).  
-   - Clone the server:  
+   - Clone and enter the directory:  
      ```bash
      git clone https://github.com/juanc07/valet-server.git
      cd valet-server
      ```
 
 2. **Install Dependencies**  
-   - Install the required npm packages:  
+   - Install packages with pnpm:  
      ```bash
-     npm install
+     pnpm install
      ```
 
-3. **Build the Project (Optional)**  
-   - If a build step is needed (check `package.json`), run:  
+3. **Configure Environment**  
+   - Copy `.env.copy` to `.env`:  
      ```bash
-     npm run build
+     cp .env.copy .env
      ```
-     (Skip this if not applicable—most servers don’t require it.)
+   - Edit `.env` with your settings, e.g.:  
+     ```bash
+     MONGODB_URI=mongodb://localhost:27017/valetdb
+     PORT=3000
+     TWITTER_APP_KEY=your_key
+     TWITTER_APP_SECRET=your_secret
+     TWITTER_BEARER_TOKEN=your_token
+     OPENAI_API_KEY=your_openai_key
+     ```
+   - Required for Twitter and OpenAI features—get keys from [developer.twitter.com](https://developer.twitter.com) and [openai.com](https://openai.com).
 
 ---
 
 ## Running the Server
 
 1. **Start the Server**  
-   - Launch the server:  
+   - Run the development server:  
      ```bash
-     npm run start
+     pnpm start
      ```
-   - Default port is typically `3000`—check your server config or `.env`.
+   - If a build is needed (e.g., for production):  
+     ```bash
+     pnpm run build
+     pnpm run serve
+     ```
+   - Default port is `3000` (adjust in `.env` if needed).
 
 2. **Test It**  
-   - Use Postman or curl to test server APIs (e.g., `http://localhost:3000/api`).  
-   - Ensure MongoDB is running, or the server won’t connect.
+   - Ensure MongoDB is running.  
+   - Test with curl:  
+     ```bash
+     curl http://localhost:3000/api/health
+     ```
+   - Or use Postman to hit endpoints (adjust based on your API routes).
 
 ---
 
-## Configuration
-- **Environment Variables**: Look for a `.env.copy` file in the repo. Create a `.env` file in `valet-server` with settings like:  
-  ```bash
-  MONGODB_URI=mongodb://localhost:27017/valetdb
-  PORT=3000
+## Notes
+- **Build**: Only run `pnpm run build` if your `package.json` includes it (e.g., for TypeScript compilation). Check scripts to confirm.
+- **Twitter Integration**: Agents need valid Twitter credentials in the database or `.env` for posting and streaming to work.
