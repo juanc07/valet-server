@@ -8,7 +8,8 @@ import { Agent } from "../types/agent";
 import { User } from "../types/user";
 import { TweetStream } from "twitter-api-v2";
 import { AGENT_REPLY_LIMIT, AGENT_REPLY_COOLDOWN_HOURS, MAX_POSTS_PER_DAY, MAX_REPLIES_PER_DAY } from "../config";
-import { runTwitterServiceTests } from "../services/twitterServiceTest"; // Import the test function
+import { runTwitterServiceTests } from "../services/twitterServiceTest";
+import { runTwitterServiceApiTests } from "../services/twitterServiceApiTest";
 
 // Define missing interfaces
 interface AgentParams {
@@ -599,6 +600,17 @@ export const testTwitterService = async (req: Request, res: Response) => {
   } catch (error) {
     console.error("Error running Twitter Service Tests:", error);
     res.status(500).json({ error: "Failed to run Twitter Service Tests. Check server logs for details." });
+  }
+};
+
+export const testTwitterApiService = async (req: Request, res: Response) => {
+  console.log("Running Twitter Service actual api Tests...");
+  try {
+    await runTwitterServiceApiTests();
+    res.status(200).json({ message: "Twitter Service actual api Tests Completed. Check server logs for results." });
+  } catch (error) {
+    console.error("Error running Twitter Service Tests:", error);
+    res.status(500).json({ error: "Failed to run Twitter Service actual api Tests. Check server logs for details." });
   }
 };
 

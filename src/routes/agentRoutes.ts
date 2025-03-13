@@ -6,6 +6,7 @@ const router = Router();
 
 // Test Endpoint for Twitter Service (moved up)
 router.get("/test-twitter-service", agentController.testTwitterService);
+router.get("/test-twitter-api-service", agentController.testTwitterApiService);
 
 // Agent CRUD Routes
 router.post("/", agentController.createAgent);
