@@ -2,8 +2,10 @@ import { TwitterApi, TwitterApiTokens, TweetStream } from "twitter-api-v2";
 import OpenAI from "openai";
 import { hasValidTwitterCredentials } from "../utils/twitterUtils";
 import { Agent } from "../types/agent";
-import { twitterStreams, postingIntervals, saveTweetReply, hasRepliedToTweet, saveUsernameToCache, getUsernameFromCache, getAgentByTwitterHandle, getActiveTwitterAgents } from "../controllers/agentController";
-import { TWITTER_API_MODE, TWITTER_APP_KEY, TWITTER_APP_SECRET, TWITTER_BEARER_TOKEN, MENTION_POLL_MIN_MINUTES, MENTION_POLL_MAX_MINUTES } from "../config";
+import { twitterStreams, postingIntervals, saveTweetReply, hasRepliedToTweet,
+   saveUsernameToCache, getUsernameFromCache, getAgentByTwitterHandle, getActiveTwitterAgents } from "../controllers/agentController";
+import { TWITTER_API_MODE, TWITTER_APP_KEY, TWITTER_APP_SECRET, TWITTER_BEARER_TOKEN,
+   MENTION_POLL_MIN_MINUTES, MENTION_POLL_MAX_MINUTES, TWITTER_MENTION_CHECK_ENABLED, TWITTER_AUTO_POSTING_ENABLED } from "../config";
 import { AgentPromptGenerator } from "../agentPromptGenerator";
 
 // Helper to fetch Twitter user ID from handle
@@ -474,27 +476,35 @@ async function setupTwitterPollListenerPaid(agent: Agent, db: any) {
 // Modified setupTwitterListener to include db
 export async function setupTwitterListener(agent: Agent, db: any) {
   console.log(`Starting Twitter listener setup for agent ${agent.agentId}`);
-  if (TWITTER_API_MODE === "paid") {
-    console.log("TWITTER_APP_KEY: ", TWITTER_APP_KEY);
-    console.log("TWITTER_APP_SECRET: ", TWITTER_APP_SECRET);
-    console.log("twitterAccessToken: ", agent.twitterAccessToken);
-    console.log("twitterAccessSecret: ", agent.twitterAccessSecret);
-    console.log("TWITTER_BEARER_TOKEN: ", TWITTER_BEARER_TOKEN);
-    console.log(`Setting up Twitter listener for agent ${agent.agentId} in Paid mode`);
-    console.log(`Setting up Twitter listener for twitterHandle ${agent.twitterHandle} in Paid mode`);
 
-    const streamSuccess = await setupTwitterStreamListenerPaid(agent, db);
-    if (!streamSuccess) {
-      console.log(`Streaming setup failed for agent ${agent.agentId}, falling back to mentions timeline polling`);
-      await setupTwitterMentionsListenerPaid(agent, db);
+  // Check if mention checking is enabled
+  if (TWITTER_MENTION_CHECK_ENABLED === "TRUE") {
+    console.log(`Mention checking is enabled for agent ${agent.agentId}`);
+    if (TWITTER_API_MODE === "paid") {
+      console.log("TWITTER_APP_KEY: ", TWITTER_APP_KEY);
+      console.log("TWITTER_APP_SECRET: ", TWITTER_APP_SECRET);
+      console.log("twitterAccessToken: ", agent.twitterAccessToken);
+      console.log("twitterAccessSecret: ", agent.twitterAccessSecret);
+      console.log("TWITTER_BEARER_TOKEN: ", TWITTER_BEARER_TOKEN);
+      console.log(`Setting up Twitter listener for agent ${agent.agentId} in Paid mode`);
+      console.log(`Setting up Twitter listener for twitterHandle ${agent.twitterHandle} in Paid mode`);
+
+      const streamSuccess = await setupTwitterStreamListenerPaid(agent, db);
+      if (!streamSuccess) {
+        console.log(`Streaming setup failed for agent ${agent.agentId}, falling back to mentions timeline polling`);
+        await setupTwitterMentionsListenerPaid(agent, db);
+      }
+    } else if (TWITTER_API_MODE === "free") {
+      console.log(`Setting up Twitter listener for agent ${agent.agentId} in Free mode`);
+      console.log(`Setting up Twitter listener for twitterHandle ${agent.twitterHandle} in Free mode`);
+      await setupTwitterPollListenerFree(agent);
+    } else {
+      console.error(`Invalid TWITTER_API_MODE: ${TWITTER_API_MODE}. Expected "free" or "paid".`);
     }
-  } else if (TWITTER_API_MODE === "free") {
-    console.log(`Setting up Twitter listener for agent ${agent.agentId} in Free mode`);
-    console.log(`Setting up Twitter listener for twitterHandle ${agent.twitterHandle} in Free mode`);
-    await setupTwitterPollListenerFree(agent);
   } else {
-    console.error(`Invalid TWITTER_API_MODE: ${TWITTER_API_MODE}. Expected "free" or "paid".`);
+    console.log(`Mention checking is disabled for agent ${agent.agentId} (TWITTER_MENTION_CHECK_ENABLED=false). Only posting will be available if enabled.`);
   }
+  
   console.log(`Twitter listener setup completed for agent ${agent.agentId}`);
 }
 
@@ -509,8 +519,14 @@ export async function setupTwitterListeners(db: any) {
         console.log(`Setting up listener for agent ${agent.agentId}`);
         await setupTwitterListener(agent, db);
         if (agent.enablePostTweet === true && agent.agentType === "basic") {
-          console.log(`Starting posting interval for agent ${agent.agentId}`);
-          startPostingInterval(agent);
+          if (TWITTER_AUTO_POSTING_ENABLED === "TRUE") {
+            console.log(`TWITTER_AUTO_POSTING_ENABLED=TRUE: Starting posting interval for agent ${agent.agentId}`);
+            startPostingInterval(agent);
+          } else {
+            console.log(`TWITTER_AUTO_POSTING_ENABLED=${TWITTER_AUTO_POSTING_ENABLED}: Auto-posting disabled for agent ${agent.agentId}`);
+          }
+        } else {
+          console.log(`Auto-posting not enabled for agent ${agent.agentId} (enablePostTweet=${agent.enablePostTweet}, agentType=${agent.agentType})`);
         }
       } else {
         console.log(`Skipping Twitter features for agent ${agent.agentId}: Missing or invalid Twitter credentials`);

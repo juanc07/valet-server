@@ -13,11 +13,15 @@ export const TWITTER_API_MODE = process.env.TWITTER_API_MODE || "free"; // Defau
 export const TWITTER_APP_KEY = process.env.TWITTER_APP_KEY;
 export const TWITTER_APP_SECRET = process.env.TWITTER_APP_SECRET;
 export const TWITTER_BEARER_TOKEN = process.env.TWITTER_BEARER_TOKEN;
+
+// related to twitter mentions
 export const MENTION_POLL_MIN_MINUTES = process.env.MENTION_POLL_MIN_MINUTES;
 export const MENTION_POLL_MAX_MINUTES = process.env.MENTION_POLL_MAX_MINUTES;
-
 export const AGENT_REPLY_LIMIT = process.env.AGENT_REPLY_LIMIT;
 export const AGENT_REPLY_COOLDOWN_HOURS = process.env.AGENT_REPLY_COOLDOWN_HOURS;
+export const TWITTER_MENTION_CHECK_ENABLED = process.env.TWITTER_MENTION_CHECK_ENABLED;
+export const TWITTER_AUTO_POSTING_ENABLED = process.env.TWITTER_AUTO_POSTING_ENABLED;
+
 
 
 export const RECEIVER_PUBLIC_KEY = new PublicKey(SOLANA_PAYMENT_WALLET);
