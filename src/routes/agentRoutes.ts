@@ -1,7 +1,11 @@
 import { Router, Request, Response } from "express";
 import * as agentController from "../controllers/agentController";
+import { runTwitterServiceTests } from "../services/twitterServiceTest"; // Import the test function
 
 const router = Router();
+
+// Test Endpoint for Twitter Service (moved up)
+router.get("/test-twitter-service", agentController.testTwitterService);
 
 // Agent CRUD Routes
 router.post("/", agentController.createAgent);

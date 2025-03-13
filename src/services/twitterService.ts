@@ -2,10 +2,30 @@ import { TwitterApi, TwitterApiTokens, TweetStream } from "twitter-api-v2";
 import OpenAI from "openai";
 import { hasValidTwitterCredentials } from "../utils/twitterUtils";
 import { Agent } from "../types/agent";
-import { twitterStreams, postingIntervals, saveTweetReply, hasRepliedToTweet,
-   saveUsernameToCache, getUsernameFromCache, getAgentByTwitterHandle, getActiveTwitterAgents } from "../controllers/agentController";
-import { TWITTER_API_MODE, TWITTER_APP_KEY, TWITTER_APP_SECRET, TWITTER_BEARER_TOKEN,
-   MENTION_POLL_MIN_MINUTES, MENTION_POLL_MAX_MINUTES, TWITTER_MENTION_CHECK_ENABLED, TWITTER_AUTO_POSTING_ENABLED } from "../config";
+import { 
+  twitterStreams, 
+  postingIntervals, 
+  saveTweetReply, 
+  hasRepliedToTweet, 
+  saveUsernameToCache, 
+  getUsernameFromCache, 
+  getAgentByTwitterHandle, 
+  getActiveTwitterAgents, 
+  canPostTweetForAgent, 
+  canReplyToMentionForAgent, 
+  incrementAgentPostCount, 
+  incrementAgentReplyCount 
+} from "../controllers/agentController";
+import { 
+  TWITTER_API_MODE, 
+  TWITTER_APP_KEY, 
+  TWITTER_APP_SECRET, 
+  TWITTER_BEARER_TOKEN, 
+  MENTION_POLL_MIN_MINUTES, 
+  MENTION_POLL_MAX_MINUTES, 
+  TWITTER_MENTION_CHECK_ENABLED, 
+  TWITTER_AUTO_POSTING_ENABLED 
+} from "../config";
 import { AgentPromptGenerator } from "../agentPromptGenerator";
 
 // Helper to fetch Twitter user ID from handle
@@ -147,6 +167,11 @@ async function setupTwitterStreamListenerPaid(agent: Agent, db: any) {
             return;
           }
 
+          if (!(await canReplyToMentionForAgent(agent.agentId, db))) {
+            console.log(`Skipping tweet ${tweetId} for agent ${agent.agentId}: Daily mention reply limit reached`);
+            return;
+          }
+
           console.log(`Generating prompt for reply to tweet ${tweetId} for agent ${agent.agentId}`);
           const promptGenerator = new AgentPromptGenerator(agent);
           const prompt = promptGenerator.generatePrompt(`Reply to this mention from @${authorUsername}: "${tweetData.text}"\nPersonalize your response by addressing @${authorUsername} directly.`);
@@ -180,7 +205,6 @@ async function setupTwitterStreamListenerPaid(agent: Agent, db: any) {
 
           console.log(`Saving reply record for tweet ${tweetId} by agent ${agent.agentId}`);
           await saveTweetReply(agent.agentId, tweetId, db, targetAgentId, authorUsername);
-          console.log(`Reply saved for tweet ${tweetId} by agent ${agent.agentId}`);
         } catch (error) {
           console.error(`Error processing mention for agent ${agent.agentId}, tweet ID: ${(tweet.data || tweet).id || 'unknown'}:`, error);
         }
@@ -277,6 +301,11 @@ async function setupTwitterMentionsListenerPaid(agent: Agent, db: any) {
             continue;
           }
 
+          if (!(await canReplyToMentionForAgent(agent.agentId, db))) {
+            console.log(`Skipping tweet ${tweetId} for agent ${agent.agentId}: Daily mention reply limit reached`);
+            continue;
+          }
+
           console.log(`Generating prompt for reply to tweet ${tweetId} for agent ${agent.agentId}`);
           const promptGenerator = new AgentPromptGenerator(agent);
           const prompt = promptGenerator.generatePrompt(`Reply to this mention from @${authorUsername}: "${tweet.text}"\nPersonalize your response by addressing @${authorUsername} directly.`);
@@ -310,7 +339,6 @@ async function setupTwitterMentionsListenerPaid(agent: Agent, db: any) {
 
           console.log(`Saving reply record for tweet ${tweetId} by agent ${agent.agentId}`);
           await saveTweetReply(agent.agentId, tweetId, db, targetAgentId, authorUsername);
-          console.log(`Reply saved for tweet ${tweetId} by agent ${agent.agentId}`);
         }
       }
 
@@ -409,6 +437,11 @@ async function setupTwitterPollListenerPaid(agent: Agent, db: any) {
             continue;
           }
 
+          if (!(await canReplyToMentionForAgent(agent.agentId, db))) {
+            console.log(`Skipping tweet ${tweetId} for agent ${agent.agentId}: Daily mention reply limit reached`);
+            continue;
+          }
+
           console.log(`Generating prompt for reply to tweet ${tweetId} for agent ${agent.agentId}`);
           const promptGenerator = new AgentPromptGenerator(agent);
           const prompt = promptGenerator.generatePrompt(`Reply to this mention from @${authorUsername}: "${tweet.text}"\nPersonalize your response by addressing @${authorUsername} directly.`);
@@ -442,7 +475,6 @@ async function setupTwitterPollListenerPaid(agent: Agent, db: any) {
 
           console.log(`Saving reply record for tweet ${tweetId} by agent ${agent.agentId}`);
           await saveTweetReply(agent.agentId, tweetId, db, targetAgentId, authorUsername);
-          console.log(`Reply saved for tweet ${tweetId} by agent ${agent.agentId}`);
         }
       }
 
@@ -521,7 +553,7 @@ export async function setupTwitterListeners(db: any) {
         if (agent.enablePostTweet === true && agent.agentType === "basic") {
           if (TWITTER_AUTO_POSTING_ENABLED === "TRUE") {
             console.log(`TWITTER_AUTO_POSTING_ENABLED=TRUE: Starting posting interval for agent ${agent.agentId}`);
-            startPostingInterval(agent);
+            startPostingInterval(agent, db);
           } else {
             console.log(`TWITTER_AUTO_POSTING_ENABLED=${TWITTER_AUTO_POSTING_ENABLED}: Auto-posting disabled for agent ${agent.agentId}`);
           }
@@ -604,10 +636,15 @@ export function stopPostingInterval(agentId: string) {
   }
 }
 
-export async function postRandomTweet(agent: Agent) {
+export async function postRandomTweet(agent: Agent, db: any) {
   console.log(`Starting random tweet posting for agent ${agent.agentId}`);
   if (!hasValidTwitterCredentials(agent)) {
     console.log(`Cannot post tweet for agent ${agent.agentId}: Invalid Twitter credentials`);
+    return;
+  }
+
+  if (!(await canPostTweetForAgent(agent.agentId, db))) {
+    console.log(`Cannot post tweet for agent ${agent.agentId}: Daily post limit reached`);
     return;
   }
 
@@ -649,6 +686,9 @@ export async function postRandomTweet(agent: Agent) {
     console.log(`Attempting to post tweet for agent ${agent.agentId}: ${tweetText}`);
     await twitterClient.v2.tweet({ text: tweetText });
     console.log(`Agent ${agent.agentId} successfully posted: ${tweetText}`);
+
+    // Increment post count after successful post
+    await incrementAgentPostCount(agent.agentId, db);
   } catch (error: any) {
     console.error(`Failed to post tweet for agent ${agent.agentId}:`, error);
     if (error.code === 403) {
@@ -660,11 +700,16 @@ export async function postRandomTweet(agent: Agent) {
   }
 }
 
-export async function postTweet(agent: Agent, message?: string) {
+export async function postTweet(agent: Agent, message?: string, db?: any) {
   console.log(`Starting manual tweet posting for agent ${agent.agentId}`);
   if (!hasValidTwitterCredentials(agent)) {
     console.log(`Cannot post tweet for agent ${agent.agentId}: Invalid Twitter credentials`);
-    return null; // Changed from throw to prevent crash
+    return null;
+  }
+
+  if (db && !(await canPostTweetForAgent(agent.agentId, db))) {
+    console.log(`Cannot post tweet for agent ${agent.agentId}: Daily post limit reached`);
+    return null;
   }
 
   const twitterTokens: TwitterApiTokens = {
@@ -683,6 +728,9 @@ export async function postTweet(agent: Agent, message?: string) {
     console.log(`Attempting to post tweet for agent ${agent.agentId}: ${tweetMessage}`);
     await twitterClient.v2.tweet({ text: tweetMessage });
     console.log(`Agent ${agent.agentId} manually posted: ${tweetMessage}`);
+
+    // Increment post count if db is provided
+    if (db) await incrementAgentPostCount(agent.agentId, db);
     return tweetMessage;
   } catch (error: any) {
     console.error(`Failed to manually post tweet for agent ${agent.agentId}:`, error);
@@ -691,11 +739,11 @@ export async function postTweet(agent: Agent, message?: string) {
     } else if (error.code === 524) {
       console.log(`Twitter API timed out (524) for agent ${agent.agentId}. Possible server issue`);
     }
-    return null; // Indicate failure without crashing
+    return null;
   }
 }
 
-export function startPostingInterval(agent: Agent) {
+export function startPostingInterval(agent: Agent, db: any) {
   console.log(`Starting posting interval setup for agent ${agent.agentId}`);
   if (!hasValidTwitterCredentials(agent)) {
     console.log(`Cannot start posting interval for agent ${agent.agentId}: Invalid Twitter credentials`);
@@ -708,7 +756,7 @@ export function startPostingInterval(agent: Agent) {
     const interval = setInterval(async () => {
       try {
         console.log(`Interval triggered for agent ${agent.agentId} at ${new Date().toISOString()}`);
-        await postRandomTweet(agent);
+        await postRandomTweet(agent, db);
         console.log(`Interval completed for agent ${agent.agentId}`);
       } catch (error) {
         console.error(`Error in posting interval for agent ${agent.agentId}:`, error);
