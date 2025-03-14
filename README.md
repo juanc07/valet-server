@@ -112,3 +112,4 @@ Install these tools before proceeding:
 ## Notes
 - **Build**: Only run `pnpm run build` if your `package.json` includes it (e.g., for TypeScript compilation). Check scripts to confirm.
 - **Twitter Integration**: Agents need valid Twitter credentials in the database or `.env` for posting and streaming to work.
+- **This system does not have a guard rail** : we need to add that in the future example an evaluator or screener another llm calls to check if what we are sending back is what we want to send to the user.
