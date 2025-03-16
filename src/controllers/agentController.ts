@@ -7,7 +7,7 @@ import { hasValidTwitterCredentials } from "../utils/twitterUtils";
 import { Agent } from "../types/agent";
 import { User } from "../types/user";
 import { TweetStream } from "twitter-api-v2";
-import { AGENT_REPLY_LIMIT, AGENT_REPLY_COOLDOWN_HOURS, MAX_POSTS_PER_DAY, MAX_REPLIES_PER_DAY } from "../config";
+import { AGENT_REPLY_LIMIT, AGENT_REPLY_COOLDOWN_HOURS, MAX_POSTS_PER_DAY, MAX_REPLIES_PER_DAY,TWITTER_INTEGRATION } from "../config";
 import { runTwitterServiceTests } from "../services/twitterServiceTest";
 import { runTwitterServiceApiTests } from "../services/twitterServiceApiTest";
 
@@ -93,16 +93,32 @@ export const getAgentByTwitterHandle = async (twitterHandle: string, db: any): P
 // Fetch active Twitter agents
 export const getActiveTwitterAgents = async (db: any): Promise<Agent[]> => {
   try {
-    const agents = await db.collection("agents").find({
-      isActive: true,
-      "settings.platforms": { $in: ["twitter"] },
-      twitterHandle: { $exists: true, $ne: "" },
-      twitterAccessToken: { $exists: true, $ne: "" },
-      twitterAccessSecret: { $exists: true, $ne: "" },
-      openaiApiKey: { $exists: true, $ne: "" },
-    }).toArray();
-    console.log(`Found ${agents.length} active Twitter agents`);
-    return agents;
+
+    if (TWITTER_INTEGRATION === "advance") {
+      const agents = await db.collection("agents").find({
+        isActive: true,
+        "settings.platforms": { $in: ["twitter"] },
+        twitterHandle: { $exists: true, $ne: "" },
+        twitterAppKey: { $exists: true, $ne: "" },
+        twitterAppSecret: { $exists: true, $ne: "" },
+        twitterAccessToken: { $exists: true, $ne: "" },
+        twitterAccessSecret: { $exists: true, $ne: "" },
+        openaiApiKey: { $exists: true, $ne: "" },
+      }).toArray();
+      console.log(`Found ${agents.length} active Twitter agents`);
+      return agents;
+    }else{
+      const agents = await db.collection("agents").find({
+        isActive: true,
+        "settings.platforms": { $in: ["twitter"] },
+        twitterHandle: { $exists: true, $ne: "" },
+        twitterAccessToken: { $exists: true, $ne: "" },
+        twitterAccessSecret: { $exists: true, $ne: "" },
+        openaiApiKey: { $exists: true, $ne: "" },
+      }).toArray();
+      console.log(`Found ${agents.length} active Twitter agents`);
+      return agents;
+    }    
   } catch (error) {
     console.error("Error fetching active Twitter agents:", error);
     return [];

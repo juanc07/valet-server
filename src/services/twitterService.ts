@@ -2,29 +2,30 @@ import { TwitterApi, TwitterApiTokens, TweetStream } from "twitter-api-v2";
 import OpenAI from "openai";
 import { hasValidTwitterCredentials } from "../utils/twitterUtils";
 import { Agent } from "../types/agent";
-import { 
-  twitterStreams, 
-  postingIntervals, 
-  saveTweetReply, 
-  hasRepliedToTweet, 
-  saveUsernameToCache, 
-  getUsernameFromCache, 
-  getAgentByTwitterHandle, 
-  getActiveTwitterAgents, 
-  canPostTweetForAgent, 
-  canReplyToMentionForAgent, 
-  incrementAgentPostCount, 
-  incrementAgentReplyCount 
+import {
+  twitterStreams,
+  postingIntervals,
+  saveTweetReply,
+  hasRepliedToTweet,
+  saveUsernameToCache,
+  getUsernameFromCache,
+  getAgentByTwitterHandle,
+  getActiveTwitterAgents,
+  canPostTweetForAgent,
+  canReplyToMentionForAgent,
+  incrementAgentPostCount,
+  incrementAgentReplyCount
 } from "../controllers/agentController";
-import { 
-  TWITTER_API_MODE, 
-  TWITTER_APP_KEY, 
-  TWITTER_APP_SECRET, 
-  TWITTER_BEARER_TOKEN, 
-  MENTION_POLL_MIN_MINUTES, 
-  MENTION_POLL_MAX_MINUTES, 
-  TWITTER_MENTION_CHECK_ENABLED, 
-  TWITTER_AUTO_POSTING_ENABLED 
+import {
+  TWITTER_INTEGRATION,
+  TWITTER_API_MODE,
+  TWITTER_APP_KEY,
+  TWITTER_APP_SECRET,
+  TWITTER_BEARER_TOKEN,
+  MENTION_POLL_MIN_MINUTES,
+  MENTION_POLL_MAX_MINUTES,
+  TWITTER_MENTION_CHECK_ENABLED,
+  TWITTER_AUTO_POSTING_ENABLED
 } from "../config";
 import { AgentPromptGenerator } from "../agentPromptGenerator";
 
@@ -105,12 +106,25 @@ async function setupTwitterStreamListenerPaid(agent: Agent, db: any) {
   const streamClient = new TwitterApi(TWITTER_BEARER_TOKEN);
   console.log(`Stream client initialized for agent ${agent.agentId}`);
 
-  const twitterTokens: TwitterApiTokens = {
-    appKey: TWITTER_APP_KEY!,
-    appSecret: TWITTER_APP_SECRET!,
-    accessToken: agent.twitterAccessToken!,
-    accessSecret: agent.twitterAccessSecret!,
-  };
+  var twitterTokens: TwitterApiTokens;
+
+  if (TWITTER_INTEGRATION === "advance") {
+    twitterTokens = {
+      appKey: agent.twitterAppKey!,
+      appSecret: agent.twitterAppSecret!,
+      accessToken: agent.twitterAccessToken!,
+      accessSecret: agent.twitterAccessSecret!,
+    };
+  } else {
+    twitterTokens = {
+      appKey: TWITTER_APP_KEY!,
+      appSecret: TWITTER_APP_SECRET!,
+      accessToken: agent.twitterAccessToken!,
+      accessSecret: agent.twitterAccessSecret!,
+    };
+  }
+
+
   const postClient = new TwitterApi(twitterTokens);
   const openai = new OpenAI({ apiKey: agent.openaiApiKey });
   console.log(`Post client and OpenAI initialized for agent ${agent.agentId}`);
@@ -387,12 +401,25 @@ async function setupTwitterPollListenerPaid(agent: Agent, db: any) {
     return;
   }
 
-  const twitterTokens: TwitterApiTokens = {
-    appKey: TWITTER_APP_KEY!,
-    appSecret: TWITTER_APP_SECRET!,
-    accessToken: agent.twitterAccessToken!,
-    accessSecret: agent.twitterAccessSecret!,
-  };
+  var twitterTokens: TwitterApiTokens;
+
+  if (TWITTER_INTEGRATION === "advance") {
+    twitterTokens = {
+      appKey: TWITTER_APP_KEY!,
+      appSecret: TWITTER_APP_SECRET!,
+      accessToken: agent.twitterAccessToken!,
+      accessSecret: agent.twitterAccessSecret!,
+    };
+  } else {
+    twitterTokens = {
+      appKey: TWITTER_APP_KEY!,
+      appSecret: TWITTER_APP_SECRET!,
+      accessToken: agent.twitterAccessToken!,
+      accessSecret: agent.twitterAccessSecret!,
+    };
+  }
+
+
   const client = new TwitterApi(twitterTokens);
   const openai = new OpenAI({ apiKey: agent.openaiApiKey });
   console.log(`Poll listener initialized for agent ${agent.agentId}`);
@@ -513,8 +540,14 @@ export async function setupTwitterListener(agent: Agent, db: any) {
   if (TWITTER_MENTION_CHECK_ENABLED === "TRUE") {
     console.log(`Mention checking is enabled for agent ${agent.agentId}`);
     if (TWITTER_API_MODE === "paid") {
-      console.log("TWITTER_APP_KEY: ", TWITTER_APP_KEY);
-      console.log("TWITTER_APP_SECRET: ", TWITTER_APP_SECRET);
+      if (TWITTER_INTEGRATION === "advance") {
+        console.log("TWITTER_APP_KEY: ", agent.twitterAppKey);
+        console.log("TWITTER_APP_SECRET: ", agent.twitterAppSecret);
+      } else {
+        console.log("TWITTER_APP_KEY: ", TWITTER_APP_KEY);
+        console.log("TWITTER_APP_SECRET: ", TWITTER_APP_SECRET);
+      }
+
       console.log("twitterAccessToken: ", agent.twitterAccessToken);
       console.log("twitterAccessSecret: ", agent.twitterAccessSecret);
       console.log("TWITTER_BEARER_TOKEN: ", TWITTER_BEARER_TOKEN);
@@ -536,7 +569,7 @@ export async function setupTwitterListener(agent: Agent, db: any) {
   } else {
     console.log(`Mention checking is disabled for agent ${agent.agentId} (TWITTER_MENTION_CHECK_ENABLED=false). Only posting will be available if enabled.`);
   }
-  
+
   console.log(`Twitter listener setup completed for agent ${agent.agentId}`);
 }
 
@@ -712,12 +745,24 @@ export async function postTweet(agent: Agent, message?: string, db?: any) {
     return null;
   }
 
-  const twitterTokens: TwitterApiTokens = {
-    appKey: TWITTER_APP_KEY!,
-    appSecret: TWITTER_APP_SECRET!,
-    accessToken: agent.twitterAccessToken!,
-    accessSecret: agent.twitterAccessSecret!,
-  };
+  var twitterTokens: TwitterApiTokens;
+
+  if (TWITTER_INTEGRATION === "advance") {
+    twitterTokens = {
+      appKey: agent.twitterAppKey!,
+      appSecret: agent.twitterAppSecret!,
+      accessToken: agent.twitterAccessToken!,
+      accessSecret: agent.twitterAccessSecret!,
+    };
+  } else {
+    twitterTokens = {
+      appKey: TWITTER_APP_KEY!,
+      appSecret: TWITTER_APP_SECRET!,
+      accessToken: agent.twitterAccessToken!,
+      accessSecret: agent.twitterAccessSecret!,
+    };
+  }
+
   const twitterClient = new TwitterApi(twitterTokens);
   console.log(`Initialized Twitter client for manual tweet posting for agent ${agent.agentId}`);
 

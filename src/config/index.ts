@@ -13,6 +13,8 @@ export const TWITTER_API_MODE = process.env.TWITTER_API_MODE || "free"; // Defau
 export const TWITTER_APP_KEY = process.env.TWITTER_APP_KEY;
 export const TWITTER_APP_SECRET = process.env.TWITTER_APP_SECRET;
 export const TWITTER_BEARER_TOKEN = process.env.TWITTER_BEARER_TOKEN;
+export const TWITTER_INTEGRATION = process.env.TWITTER_INTEGRATION;
+
 
 // related to twitter mentions
 export const MENTION_POLL_MIN_MINUTES = process.env.MENTION_POLL_MIN_MINUTES;

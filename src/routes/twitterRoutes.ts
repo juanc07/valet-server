@@ -7,8 +7,8 @@ const router = Router();
 router.post("/:agentId/tweet", postTweetManually);
 
 // Twitter OAuth Routes
-router.post("/oauth/request", initiateTwitterOAuth);
-router.get("/oauth/callback", completeTwitterOAuth);
+//router.post("/oauth/request", initiateTwitterOAuth);
+//router.get("/oauth/callback", completeTwitterOAuth);
 
 // Test Route for Session
 router.get("/test-session", (req: Request, res: Response) => {
