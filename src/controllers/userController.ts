@@ -29,19 +29,21 @@ export const createUser = async (req: Request, res: Response) => {
     const db = await connectToDatabase();
     const user: Omit<User, "userId"> & { userId?: string } = req.body;
     if (!user.username || !user.email || !user.password) {
-      res.status(400).json({ error: "username, email, and password are required" });
-    } else {
-      const generatedUserId = uuidv4();
-      const newUser: User = {
-        ...user,
-        userId: generatedUserId,
-      };
-      const result = await db.collection("users").insertOne(newUser);
-      res.status(201).json({ _id: result.insertedId, ...newUser });
+      console.log("Missing required fields:", { username: user.username, email: user.email, password: user.password });
+      return res.status(400).json({ error: "username, email, and password are required" });
     }
+    const generatedUserId = uuidv4();
+    const newUser: User = {
+      ...user,
+      userId: generatedUserId,
+    };
+    console.log("Creating user:", newUser);
+    const result = await db.collection("users").insertOne(newUser);
+    console.log("User created, insertedId:", result.insertedId);
+    res.status(201).json({ _id: result.insertedId, ...newUser });
   } catch (error) {
     console.error("Error creating user:", error);
-    res.status(500).json({ error: "Failed to create user" });
+    res.status(500).json({ error: "Failed to create user", details: error });
   }
 };
 
@@ -65,17 +67,27 @@ export const getUserByWallet = async (req: Request<{ solanaWalletAddress: string
   console.log("1st getUserByWallet");
   try {
     const db = await connectToDatabase();
+    console.log("DB connected successfully");
     const { solanaWalletAddress } = req.params;
-    console.log("getUserByWallet solanaWalletAddress: ", solanaWalletAddress);
+    if (!solanaWalletAddress) {
+      console.log("No solanaWalletAddress provided");
+      return res.status(400).json({ error: "solanaWalletAddress is required" });
+    }
+    console.log("getUserByWallet solanaWalletAddress:", solanaWalletAddress);
+
+    // Ensure collection exists (optional, MongoDB auto-creates on insert)
+    const collections = await db.listCollections({ name: "users" }).toArray();
+    console.log("Collections:", collections);
+
     const user = await db.collection("users").findOne({ solanaWalletAddress });
-    console.log("getUserByWallet found user: ", user);
+    console.log("getUserByWallet found user:", user || "null");
 
     res.status(200).json({
       user: user || null,
     });
   } catch (error) {
     console.error("Error fetching user by wallet:", error);
-    res.status(500).json({ error: "Failed to fetch user" });
+    res.status(500).json({ error: "Failed to fetch user", details: error});
   }
 };
 
