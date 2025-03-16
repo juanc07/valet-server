@@ -260,12 +260,24 @@ async function setupTwitterMentionsListenerPaid(agent: Agent, db: any) {
     return;
   }
 
-  const twitterTokens: TwitterApiTokens = {
-    appKey: TWITTER_APP_KEY!,
-    appSecret: TWITTER_APP_SECRET!,
-    accessToken: agent.twitterAccessToken!,
-    accessSecret: agent.twitterAccessSecret!,
-  };
+  var twitterTokens: TwitterApiTokens;
+
+  if (TWITTER_INTEGRATION === "advance") {
+    twitterTokens = {
+      appKey: agent.twitterAppKey!,
+      appSecret: agent.twitterAppSecret!,
+      accessToken: agent.twitterAccessToken!,
+      accessSecret: agent.twitterAccessSecret!,
+    };
+  } else {
+    twitterTokens = {
+      appKey: TWITTER_APP_KEY!,
+      appSecret: TWITTER_APP_SECRET!,
+      accessToken: agent.twitterAccessToken!,
+      accessSecret: agent.twitterAccessSecret!,
+    };
+  }
+  
   const client = new TwitterApi(twitterTokens);
   const openai = new OpenAI({ apiKey: agent.openaiApiKey });
 
@@ -681,12 +693,24 @@ export async function postRandomTweet(agent: Agent, db: any) {
     return;
   }
 
-  const twitterTokens: TwitterApiTokens = {
-    appKey: TWITTER_APP_KEY!,
-    appSecret: TWITTER_APP_SECRET!,
-    accessToken: agent.twitterAccessToken!,
-    accessSecret: agent.twitterAccessSecret!,
-  };
+  var twitterTokens: TwitterApiTokens;
+
+  if (TWITTER_INTEGRATION === "advance") {
+    twitterTokens = {
+      appKey: agent.twitterAppKey!,
+      appSecret: agent.twitterAppSecret!,
+      accessToken: agent.twitterAccessToken!,
+      accessSecret: agent.twitterAccessSecret!,
+    };
+  } else {
+    twitterTokens = {
+      appKey: TWITTER_APP_KEY!,
+      appSecret: TWITTER_APP_SECRET!,
+      accessToken: agent.twitterAccessToken!,
+      accessSecret: agent.twitterAccessSecret!,
+    };
+  }
+  
   const twitterClient = new TwitterApi(twitterTokens);
   const openai = new OpenAI({ apiKey: agent.openaiApiKey });
   const promptGenerator = new AgentPromptGenerator(agent);
