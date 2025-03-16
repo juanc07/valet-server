@@ -1,6 +1,8 @@
 import cors from "cors";
 import { FRONTEND_URL } from "../config";
 
+console.log("CORS FRONTEND_URL:", FRONTEND_URL); // Debug
+
 const corsOptions: cors.CorsOptions = {
   origin: (origin, callback) => {
     const allowedOrigins = [
@@ -8,13 +10,13 @@ const corsOptions: cors.CorsOptions = {
       "http://localhost:3001",
       "http://localhost:5173",
       "http://localhost:5174",
-      "http://localhost:3000", // Backend URL for direct requests
+      "http://localhost:3000",
     ];
-    // Allow requests with no origin (e.g., OAuth callbacks) or matching allowed origins
+    console.log("CORS Origin:", origin, "Allowed:", allowedOrigins); // Debug
     if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
-      console.log(`CORS rejected origin: ${origin}`); // Debug log
+      console.log(`CORS rejected origin: ${origin}`);
       callback(new Error("Not allowed by CORS"));
     }
   },
