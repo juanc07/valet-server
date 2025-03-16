@@ -31,4 +31,11 @@ app.use("/users", userRoutes);
 app.use("/chat", chatRoutes);
 app.use("/images", imageRoutes);
 
+
+// Add at the end, before export
+app.get('/', (req, res) => {
+    res.send('Valet Server is live!');
+});
+
+
 export default app;
