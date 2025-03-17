@@ -29,9 +29,12 @@ export const initiateTwitterOAuth: RequestHandler = async (req, res) => {
     console.log("Twitter App Secret:", process.env.TWITTER_APP_SECRET);
     console.log("Callback URL:", `${process.env.API_BASE_URL}/twitter/oauth/callback`);
 
-    const authLink = await twitterClient.generateAuthLink(`${process.env.API_BASE_URL}/twitter/oauth/callback`, {
-      linkMode: "authorize",
-    });
+    const authLink = await twitterClient.generateAuthLink(
+      `${process.env.API_BASE_URL}/twitter/oauth/callback`,
+      {
+        linkMode: "authorize",
+      }
+    );
 
     const session = req.session as typeof req.session & {
       oauthToken?: string;
@@ -54,7 +57,7 @@ export const initiateTwitterOAuth: RequestHandler = async (req, res) => {
 
 export const completeTwitterOAuth: RequestHandler = async (req, res) => {
   const { oauth_token, oauth_verifier } = req.query as { [key: string]: string | undefined };
-  
+
   const session = req.session as typeof req.session & {
     oauthToken?: string;
     oauthTokenSecret?: string;
@@ -101,9 +104,23 @@ export const postTweetManually = async (req: Request<AgentParams>, res: Response
     const agentId = req.params.agentId;
     const { message } = req.body;
 
-    const agent = await db.collection("agents").findOne({ agentId }) as Agent | null;
+    if (!message) {
+      res.status(400).json({ error: "Message is required" });
+      return;
+    }
+
+    const agent = (await db.collection("agents").findOne({ agentId })) as Agent | null;
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+
+    // Check if agent is inactive and throw a warning
+    if (agent.isActive === false) {
+      res.status(403).json({
+        agentId,
+        warning: "This agent is currently inactive and cannot post tweets.",
+      });
       return;
     }
 
