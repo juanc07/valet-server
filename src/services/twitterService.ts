@@ -24,7 +24,8 @@ import {
   MENTION_POLL_MIN_MINUTES,
   MENTION_POLL_MAX_MINUTES,
   TWITTER_MENTION_CHECK_ENABLED,
-  TWITTER_AUTO_POSTING_ENABLED
+  TWITTER_AUTO_POSTING_ENABLED,
+  TWITTER_AUTO_POSTING_MIN_INTERVAL
 } from "../config";
 import { AgentPromptGenerator } from "../agentPromptGenerator";
 
@@ -616,10 +617,23 @@ export function startPostingInterval(agent: Agent, db: any) {
   }
 
   stopPostingInterval(agent.agentId);
-  const intervalSeconds = agent.postTweetInterval ?? 3600;
+
+  const twitterAutoPostingMinInterval = parseInt(TWITTER_AUTO_POSTING_MIN_INTERVAL || "3600", 10);
+  let intervalSeconds = 3600;
+  if (agent.postTweetInterval !== undefined) { // Explicit check for undefined
+    intervalSeconds = agent.postTweetInterval < twitterAutoPostingMinInterval
+      ? twitterAutoPostingMinInterval
+      : agent.postTweetInterval;
+  }
+
   const interval = setInterval(async () => {
-    await postRandomTweet(agent, db);
+    try {
+      await postRandomTweet(agent, db);
+    } catch (error) {
+      console.error(`Error posting tweet for agent ${agent.agentId}:`, error);
+    }
   }, intervalSeconds * 1000);
+
   postingIntervals.set(agent.agentId, interval);
   console.log(`Started posting interval for agent ${agent.agentId} every ${intervalSeconds} seconds`);
 }
