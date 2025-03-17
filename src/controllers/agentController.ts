@@ -7,7 +7,7 @@ import { hasValidTwitterCredentials } from "../utils/twitterUtils";
 import { Agent } from "../types/agent";
 import { User } from "../types/user";
 import { TweetStream } from "twitter-api-v2";
-import { AGENT_REPLY_LIMIT, AGENT_REPLY_COOLDOWN_HOURS, MAX_POSTS_PER_DAY, MAX_REPLIES_PER_DAY,TWITTER_INTEGRATION } from "../config";
+import { AGENT_REPLY_LIMIT, AGENT_REPLY_COOLDOWN_HOURS, MAX_POSTS_PER_DAY, MAX_REPLIES_PER_DAY, TWITTER_INTEGRATION } from "../config";
 import { runTwitterServiceTests } from "../services/twitterServiceTest";
 import { runTwitterServiceApiTests } from "../services/twitterServiceApiTest";
 
@@ -93,7 +93,6 @@ export const getAgentByTwitterHandle = async (twitterHandle: string, db: any): P
 // Fetch active Twitter agents
 export const getActiveTwitterAgents = async (db: any): Promise<Agent[]> => {
   try {
-
     if (TWITTER_INTEGRATION === "advance") {
       const agents = await db.collection("agents").find({
         isActive: true,
@@ -107,7 +106,7 @@ export const getActiveTwitterAgents = async (db: any): Promise<Agent[]> => {
       }).toArray();
       console.log(`Found ${agents.length} active Twitter agents`);
       return agents;
-    }else{
+    } else {
       const agents = await db.collection("agents").find({
         isActive: true,
         "settings.platforms": { $in: ["twitter"] },
@@ -131,17 +130,16 @@ export const canPostTweetForAgent = async (agentId: string, db: any): Promise<bo
     const limitDoc: AgentDailyLimit | null = await db.collection("agentDailyLimits").findOne({ agentId });
     const now = new Date();
     
-    // Check if the post limit was hit and 24 hours have passed to reset
     if (limitDoc && limitDoc.lastPostLimitHit) {
       const timeSinceLimit = now.getTime() - new Date(limitDoc.lastPostLimitHit).getTime();
-      if (timeSinceLimit >= 24 * 60 * 60 * 1000) { // 24 hours in milliseconds
+      if (timeSinceLimit >= 24 * 60 * 60 * 1000) {
         await db.collection("agentDailyLimits").updateOne(
           { agentId },
           { $set: { postCount: 0, lastPostLimitHit: null } },
           { upsert: true }
         );
         console.log(`Reset post count for agent ${agentId} after 24 hours`);
-        return true; // Agent can post since limit is reset
+        return true;
       }
     }
 
@@ -151,7 +149,7 @@ export const canPostTweetForAgent = async (agentId: string, db: any): Promise<bo
     return canPost;
   } catch (error) {
     console.error(`Error checking post limit for agent ${agentId}:`, error);
-    return false; // Fail-safe: assume limit reached on error
+    return false;
   }
 };
 
@@ -161,17 +159,16 @@ export const canReplyToMentionForAgent = async (agentId: string, db: any): Promi
     const limitDoc: AgentDailyLimit | null = await db.collection("agentDailyLimits").findOne({ agentId });
     const now = new Date();
     
-    // Check if the reply limit was hit and 24 hours have passed to reset
     if (limitDoc && limitDoc.lastReplyLimitHit) {
       const timeSinceLimit = now.getTime() - new Date(limitDoc.lastReplyLimitHit).getTime();
-      if (timeSinceLimit >= 24 * 60 * 60 * 1000) { // 24 hours in milliseconds
+      if (timeSinceLimit >= 24 * 60 * 60 * 1000) {
         await db.collection("agentDailyLimits").updateOne(
           { agentId },
           { $set: { replyCount: 0, lastReplyLimitHit: null } },
           { upsert: true }
         );
         console.log(`Reset reply count for agent ${agentId} after 24 hours`);
-        return true; // Agent can reply since limit is reset
+        return true;
       }
     }
 
@@ -181,7 +178,7 @@ export const canReplyToMentionForAgent = async (agentId: string, db: any): Promi
     return canReply;
   } catch (error) {
     console.error(`Error checking reply limit for agent ${agentId}:`, error);
-    return false; // Fail-safe: assume limit reached on error
+    return false;
   }
 };
 
@@ -197,7 +194,6 @@ export const incrementAgentPostCount = async (agentId: string, db: any): Promise
       console.log(`Agent ${agentId} hit post limit (${maxPostPerDay}); setting timestamp`);
     }
     
-    // Preserve existing reply count and timestamp
     if (!limitDoc || !limitDoc.replyCount) update.$set.replyCount = limitDoc?.replyCount || 0;
     if (limitDoc?.lastReplyLimitHit) update.$set.lastReplyLimitHit = limitDoc.lastReplyLimitHit;
 
@@ -224,7 +220,6 @@ export const incrementAgentReplyCount = async (agentId: string, db: any): Promis
       console.log(`Agent ${agentId} hit reply limit (${maxTweetReplyPerDay}); setting timestamp`);
     }
     
-    // Preserve existing post count and timestamp
     if (!limitDoc || !limitDoc.postCount) update.$set.postCount = limitDoc?.postCount || 0;
     if (limitDoc?.lastPostLimitHit) update.$set.lastPostLimitHit = limitDoc.lastPostLimitHit;
 
@@ -319,13 +314,16 @@ export const createAgent = async (req: Request, res: Response) => {
       ...agent,
       agentId: generatedId,
       isActive: true,
+      isTwitterPaid: agent.isTwitterPaid ?? false, // Default to false if not provided
     };
 
     const result = await db.collection("agents").insertOne(newAgent);
 
     const hasTwitterPlatform = Array.isArray(newAgent.settings?.platforms) && newAgent.settings.platforms.includes("twitter");
-    if (newAgent.isActive && hasValidTwitterCredentials(newAgent) && hasTwitterPlatform) {
-      // Check and reset limits on agent creation
+    if (newAgent.isActive && hasTwitterPlatform) {
+      if (newAgent.isTwitterPaid && !hasValidTwitterCredentials(newAgent)) {
+        console.warn(`Agent ${newAgent.agentId} marked as Twitter paid but lacks valid credentials. Falling back to free mode.`);
+      }
       await canPostTweetForAgent(newAgent.agentId, db);
       await canReplyToMentionForAgent(newAgent.agentId, db);
       await setupTwitterListener(newAgent, db);
@@ -451,6 +449,8 @@ export const updateAgent = async (req: Request<AgentParams>, res: Response) => {
     const isBasicNow = newAgentData.agentType === "basic";
     const hadTwitterPlatform = Array.isArray(currentAgent.settings?.platforms) && currentAgent.settings.platforms.includes("twitter");
     const hasTwitterPlatformNow = Array.isArray(newAgentData.settings?.platforms) && newAgentData.settings.platforms.includes("twitter");
+    const wasTwitterPaid = currentAgent.isTwitterPaid ?? false;
+    const isTwitterPaidNow = newAgentData.isTwitterPaid ?? wasTwitterPaid;
 
     console.log("State check:", {
       wasActive,
@@ -463,14 +463,17 @@ export const updateAgent = async (req: Request<AgentParams>, res: Response) => {
       isBasicNow,
       hadTwitterPlatform,
       hasTwitterPlatformNow,
+      wasTwitterPaid,
+      isTwitterPaidNow,
     });
 
     await stopTwitterListener(agentId);
     stopPostingInterval(agentId);
 
-    if (isActiveNow && hasCredentialsNow && hasTwitterPlatformNow) {
-      console.log("Setting up Twitter listener for agent after update");
-      // Check and reset limits on agent update
+    if (isActiveNow && hasTwitterPlatformNow) {
+      if (isTwitterPaidNow && !hasCredentialsNow) {
+        console.warn(`Agent ${agentId} marked as Twitter paid but lacks valid credentials. Falling back to free mode.`);
+      }
       await canPostTweetForAgent(agentId, db);
       await canReplyToMentionForAgent(agentId, db);
       try {
@@ -478,15 +481,12 @@ export const updateAgent = async (req: Request<AgentParams>, res: Response) => {
       } catch (twitterError) {
         console.error("Failed to setup Twitter listener in updateAgent:", twitterError);
       }
+      if (isPostingEnabledNow && isBasicNow && hasCredentialsNow) {
+        console.log("Restarting posting interval for agent after update");
+        startPostingInterval(newAgentData, db);
+      }
     } else {
       console.log("Skipping Twitter listener setup: Conditions not met");
-    }
-
-    if (isActiveNow && isBasicNow && isPostingEnabledNow && hasCredentialsNow && hasTwitterPlatformNow) {
-      console.log("Restarting posting interval for agent after update");
-      startPostingInterval(newAgentData, db);
-    } else {
-      console.log("Skipping posting interval setup: Conditions not met");
     }
 
     res.status(200).json({ message: "Agent updated" });
@@ -551,51 +551,67 @@ export const getAgentById = async (req: Request<AgentParams>, res: Response) => 
   }
 };
 
-// Save tweet replies to MongoDB with additional fields and increment reply count
+// Save tweet replies to MongoDB with retry logic
 export const saveTweetReply = async (agentId: string, tweetId: string, db: any, targetAgentId?: string, authorUsername?: string): Promise<void> => {
-  try {
-    const tweetReply: TweetReply = {
-      agentId,
-      tweetId,
-      targetAgentId,
-      authorUsername,
-      repliedAt: new Date(),
-    };
-    const result = await db.collection("tweetReplies").updateOne(
-      { agentId, tweetId },
-      { $set: tweetReply },
-      { upsert: true }
-    );
-    console.log(`Saved tweet reply for agent ${agentId}, tweet ${tweetId}. Upserted: ${result.upsertedCount > 0}`);
-    
-    // Increment reply count
-    await incrementAgentReplyCount(agentId, db);
-  } catch (error) {
-    console.error(`Error saving tweet reply for agent ${agentId}, tweet ${tweetId}:`, error);
-    throw error;
+  const tweetReply: TweetReply = {
+    agentId,
+    tweetId,
+    targetAgentId,
+    authorUsername,
+    repliedAt: new Date(),
+  };
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const result = await db.collection("tweetReplies").updateOne(
+        { agentId, tweetId },
+        { $set: tweetReply },
+        { upsert: true }
+      );
+      console.log(`Saved tweet reply for agent ${agentId}, tweet ${tweetId}. Attempt ${attempt}, Upserted: ${result.upsertedCount > 0}`);
+      await incrementAgentReplyCount(agentId, db);
+      return;
+    } catch (error) {
+      console.error(`Attempt ${attempt} failed to save tweet reply for agent ${agentId}, tweet ${tweetId}:`, error);
+      if (attempt === 3) throw new Error(`Failed to save tweet reply after 3 attempts: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+    }
   }
 };
 
-// Check if a tweet has been replied to, with agent-to-agent limit check
+// Check if a tweet has been replied to, with general and agent-specific cooldown
 export const hasRepliedToTweet = async (agentId: string, tweetId: string, db: any, authorUsername?: string): Promise<boolean> => {
   try {
     const reply = await db.collection("tweetReplies").findOne({ agentId, tweetId });
-    if (reply) return true;
+    if (reply) {
+      console.log(`Tweet ${tweetId} already replied by agent ${agentId}`);
+      return true;
+    }
+
+    const coolDownHour = parseInt(AGENT_REPLY_COOLDOWN_HOURS || "2", 10);
+    const replyLimitCount = parseInt(AGENT_REPLY_LIMIT || "3", 10);
+
+    const recentReplies = await db.collection("tweetReplies").find({
+      agentId,
+      repliedAt: { $gt: new Date(Date.now() - coolDownHour * 60 * 60 * 1000) }
+    }).sort({ repliedAt: -1 }).limit(replyLimitCount).toArray();
+
+    if (recentReplies.length >= replyLimitCount) {
+      console.log(`Agent ${agentId} hit general reply limit (${replyLimitCount}) in last ${coolDownHour} hours`);
+      return true;
+    }
 
     if (authorUsername) {
       const targetAgent = await getAgentByTwitterHandle(authorUsername, db);
       if (targetAgent) {
-        const coolDownHour = parseInt(AGENT_REPLY_COOLDOWN_HOURS || "2", 10);
-        const replyLimitCount = parseInt(AGENT_REPLY_LIMIT || "3", 10);
         const targetAgentId = targetAgent.agentId;
-        const recentReplies = await db.collection("tweetReplies").find({
+        const agentReplies = await db.collection("tweetReplies").find({
           agentId,
           targetAgentId,
           repliedAt: { $gt: new Date(Date.now() - coolDownHour * 60 * 60 * 1000) }
-        }).sort({ repliedAt: -1 }).limit(3).toArray();
+        }).sort({ repliedAt: -1 }).limit(replyLimitCount).toArray();
 
-        if (recentReplies.length >= replyLimitCount) {
-          console.log(`Agent ${agentId} has replied to ${targetAgentId} 3 times in last 2 hours; cooldown active`);
+        if (agentReplies.length >= replyLimitCount) {
+          console.log(`Agent ${agentId} has replied to ${targetAgentId} ${replyLimitCount} times in last ${coolDownHour} hours`);
           return true;
         }
       }
@@ -603,11 +619,11 @@ export const hasRepliedToTweet = async (agentId: string, tweetId: string, db: an
     return false;
   } catch (error) {
     console.error(`Error checking tweet reply for agent ${agentId}, tweet ${tweetId}:`, error);
-    return false;
+    return true; // Fail-safe
   }
 };
 
-// New method to run Twitter service tests
+// Test Twitter service
 export const testTwitterService = async (req: Request, res: Response) => {
   console.log("Running Twitter Service Tests...");
   try {

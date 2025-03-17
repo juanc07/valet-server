@@ -5,7 +5,6 @@ import { postTweet } from "../services/twitterService";
 import { Agent } from "../types/agent";
 import { FRONTEND_URL } from "../config";
 
-
 interface AgentParams {
   agentId: string;
 }
@@ -34,7 +33,6 @@ export const initiateTwitterOAuth: RequestHandler = async (req, res) => {
       linkMode: "authorize",
     });
 
-    // Type assertion for session
     const session = req.session as typeof req.session & {
       oauthToken?: string;
       oauthTokenSecret?: string;
@@ -54,7 +52,6 @@ export const initiateTwitterOAuth: RequestHandler = async (req, res) => {
   }
 };
 
-// twitterController.ts
 export const completeTwitterOAuth: RequestHandler = async (req, res) => {
   const { oauth_token, oauth_verifier } = req.query as { [key: string]: string | undefined };
   
@@ -91,7 +88,6 @@ export const completeTwitterOAuth: RequestHandler = async (req, res) => {
     delete session.oauthTokenSecret;
     delete session.agentId;
 
-    // Redirect to frontend port
     res.redirect(`${FRONTEND_URL}/agent/edit/${agentId}?oauth_callback=true`);
   } catch (error) {
     console.error("OAuth callback error:", error);
