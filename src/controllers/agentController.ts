@@ -1,7 +1,7 @@
 import { Request, Response } from "express";
 import { v4 as uuidv4 } from "uuid";
 import { connectToDatabase } from "../services/dbService";
-import { verifySolPayment } from "../services/solanaService";
+import { verifyTokenPayment } from "../services/solanaService"; // Updated import
 import { setupTwitterListener, startPostingInterval, stopPostingInterval, stopTwitterListener, postTweet } from "../services/twitterService";
 import { hasValidTwitterCredentials } from "../utils/twitterUtils";
 import { Agent } from "../types/agent";
@@ -303,9 +303,9 @@ export const createAgent = async (req: Request, res: Response) => {
       return;
     }
 
-    const paymentValid = await verifySolPayment(txSignature, user.solanaWalletAddress);
+    const paymentValid = await verifyTokenPayment(txSignature, user.solanaWalletAddress); // Updated to token payment
     if (!paymentValid) {
-      res.status(400).json({ error: "Transaction does not contain valid SOL transfer of 0.01 SOL" });
+      res.status(400).json({ error: "Transaction does not contain valid transfer of 1000 tokens" }); // Updated error message
       return;
     }
 
