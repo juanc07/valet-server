@@ -48,40 +48,48 @@ export async function verifySolPaymentWithAmount(
   return !!transferInstruction;
 }
 
-// New method to verify custom token payment
+// New method to verify custom token payment with enhanced debugging
 export async function verifyTokenPayment(txSignature: string, senderWallet: string): Promise<boolean> {
   try {
+    console.log("Verifying token payment with SOLANA_ENDPOINT:", SOLANA_ENDPOINT);
+    console.log("Transaction signature:", txSignature);
+    console.log("Sender wallet:", senderWallet);
     const connection = new Connection(SOLANA_ENDPOINT, "confirmed");
     const transaction = await connection.getParsedTransaction(txSignature, {
-      maxSupportedTransactionVersion: 0,
+      maxSupportedTransactionVersion: undefined, // Support all transaction versions
     });
 
     if (!transaction || !transaction.meta) {
-      console.log("Transaction not found or not confirmed yet");
+      console.log("Transaction not found or not confirmed yet:", transaction);
       return false;
     }
 
-    // Get sender's and receiver's Associated Token Accounts (ATAs)
+    // Log full transaction instructions for debugging
+    console.log("Transaction instructions:", JSON.stringify(transaction.transaction.message.instructions, null, 2));
+
     const senderPublicKey = new PublicKey(senderWallet);
     const senderATA = await getAssociatedTokenAddress(TOKEN_MINT_ADDRESS, senderPublicKey);
     const receiverATA = await getAssociatedTokenAddress(TOKEN_MINT_ADDRESS, RECEIVER_PUBLIC_KEY);
 
-    // Check for token transfer instruction
+    console.log("Expected senderATA:", senderATA.toString());
+    console.log("Expected receiverATA:", receiverATA.toString());
+    console.log("Expected amount:", AGENT_CREATION_TOKEN_AMOUNT.toString());
+
+    // Check for token transfer instruction with flexible matching
     const tokenTransferInstruction = transaction.transaction.message.instructions.find(
       (ix: any) =>
         ix.programId.toString() === TOKEN_PROGRAM_ID.toString() &&
-        ix.parsed?.type === "transfer" &&
-        ix.parsed.info.source === senderATA.toString() &&
-        ix.parsed.info.destination === receiverATA.toString() &&
-        ix.parsed.info.amount === AGENT_CREATION_TOKEN_AMOUNT.toString()
+        ix.parsed?.info?.source === senderATA.toString() &&
+        ix.parsed?.info?.destination === receiverATA.toString() &&
+        ix.parsed?.info?.amount === AGENT_CREATION_TOKEN_AMOUNT.toString()
     );
 
     if (!tokenTransferInstruction) {
-      console.log("No valid token transfer found in transaction");
+      console.log("No valid token transfer found in transaction. Expected conditions not met.");
       return false;
     }
 
-    console.log("Token payment verified successfully");
+    console.log("Token payment verified successfully:", JSON.stringify(tokenTransferInstruction, null, 2));
     return true;
   } catch (error) {
     console.error("Error verifying token payment:", error);
