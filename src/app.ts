@@ -1,7 +1,7 @@
 import express, { Express } from "express";
 import session from "express-session";
 import rateLimit from "express-rate-limit";
-import corsMiddleware, { ipWhitelistMiddleware } from "./middleware/cors";
+import corsMiddleware from "./middleware/cors";
 import agentRoutes from "./routes/agentRoutes";
 import userRoutes from "./routes/userRoutes";
 import chatRoutes from "./routes/chatRoutes";
@@ -17,10 +17,13 @@ const API_KEY = process.env.API_KEY || "your-secure-api-key-here";
 
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 100,
+  max: 500,
   message: { error: "Too many requests, please try again later." },
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => {
+    return req.headers['x-from-vercel'] === 'true';
+  },
 });
 
 const apiKeyMiddleware = (req: express.Request, res: express.Response, next: express.NextFunction) => {
@@ -34,13 +37,13 @@ const apiKeyMiddleware = (req: express.Request, res: express.Response, next: exp
 
 app.use(limiter);
 app.use(corsMiddleware);
-// app.use(ipWhitelistMiddleware); // Uncomment if using IP whitelist
 app.use(apiKeyMiddleware);
 app.use(express.json());
 
+/*
 app.use(
   session({
-    secret: "your-secret-key",
+    secret: process.env.SESSION_SECRET || "your-secret-key",
     resave: false,
     saveUninitialized: false,
     cookie: {
@@ -48,7 +51,7 @@ app.use(
       maxAge: 24 * 60 * 60 * 1000,
     },
   })
-);
+);*/
 
 app.use("/agents", agentRoutes);
 app.use("/twitter", twitterRoutes);
@@ -59,6 +62,12 @@ app.use("/utility", utilityRoutes);
 
 app.get("/", (req, res) => {
   res.send("Valet Server is live!");
+});
+
+// Error handling middleware (catch route errors)
+app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  console.error('Route Error:', err);
+  res.status(500).json({ error: "Internal Server Error" });
 });
 
 export default app;
