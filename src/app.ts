@@ -64,6 +64,13 @@ app.get("/", (req, res) => {
   res.send("Valet Server is live!");
 });
 
+// New status endpoint
+app.get("/status", (req, res) => {
+  // Add any additional health checks here if needed
+  const isLive = true; // You can modify this based on actual service status
+  res.status(200).json({ isLive });
+});
+
 // Error handling middleware (catch route errors)
 app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
   console.error('Route Error:', err);
