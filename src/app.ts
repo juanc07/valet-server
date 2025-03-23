@@ -22,7 +22,7 @@ const limiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   skip: (req) => {
-    return req.headers['x-from-vercel'] === 'true';
+    return req.headers['X-From-Vercel'] === 'true';
   },
 });
 

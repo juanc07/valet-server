@@ -31,7 +31,7 @@ const corsOptions: cors.CorsOptions = {
     }
   },
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Accept", "X-API-Key"], // Add custom header for API key
+  allowedHeaders: ["Content-Type", "Accept", "X-API-Key","X-From-Vercel"], // Add custom header for API key
   credentials: true,
 };
 
