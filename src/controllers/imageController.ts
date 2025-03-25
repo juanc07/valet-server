@@ -21,6 +21,12 @@ export const uploadProfileImage = async (
   next: NextFunction
 ): Promise<void> => {
   try {
+    // Check for correct content type
+    if (!req.headers["content-type"]?.startsWith("multipart/form-data")) {
+      res.status(400).json({ error: "Expected multipart/form-data" });
+      return;
+    }
+
     const db = await connectToDatabase();
     const agentId = req.params.agentId;
 
@@ -42,9 +48,6 @@ export const uploadProfileImage = async (
         console.log(`Deleted old profile image with ID: ${agent.profileImageId}`);
       } catch (deleteError) {
         console.error("Error deleting old profile image:", deleteError);
-        // Optionally, you could fail the request here if deletion is critical
-        // res.status(500).json({ error: "Failed to delete old profile image" });
-        // return;
       }
     }
 
@@ -61,7 +64,6 @@ export const uploadProfileImage = async (
       console.log(`Deleted temporary file: ${req.file.path}`);
     } catch (deleteError) {
       console.error("Error deleting temporary file:", deleteError);
-      // Continue execution even if deletion fails, as the upload to Cloudinary succeeded
     }
 
     // Update the agent's profileImageId in the database

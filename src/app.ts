@@ -1,5 +1,4 @@
 import express, { Express } from "express";
-import session from "express-session";
 import rateLimit from "express-rate-limit";
 import corsMiddleware from "./middleware/cors";
 import agentRoutes from "./routes/agentRoutes";
@@ -21,9 +20,7 @@ const limiter = rateLimit({
   message: { error: "Too many requests, please try again later." },
   standardHeaders: true,
   legacyHeaders: false,
-  skip: (req) => {
-    return req.headers['X-From-Vercel'] === 'true';
-  },
+  skip: (req) => req.headers["X-From-Vercel"] === "true",
 });
 
 const apiKeyMiddleware = (req: express.Request, res: express.Response, next: express.NextFunction) => {
@@ -38,42 +35,33 @@ const apiKeyMiddleware = (req: express.Request, res: express.Response, next: exp
 app.use(limiter);
 app.use(corsMiddleware);
 app.use(apiKeyMiddleware);
-app.use(express.json());
 
-/*
-app.use(
-  session({
-    secret: process.env.SESSION_SECRET || "your-secret-key",
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-      secure: process.env.NODE_ENV === "production",
-      maxAge: 24 * 60 * 60 * 1000,
-    },
-  })
-);*/
+// Middleware Strategy:
+// - express.json() is applied only to routes expecting JSON payloads.
+// - Routes like /images use multer for multipart/form-data and skip JSON parsing.
 
-app.use("/agents", agentRoutes);
-app.use("/twitter", twitterRoutes);
-app.use("/users", userRoutes);
-app.use("/chat", chatRoutes);
+// Apply express.json() only to routes that need it
+app.use("/agents", express.json(), agentRoutes);
+app.use("/twitter", express.json(), twitterRoutes);
+app.use("/users", express.json(), userRoutes);
+app.use("/chat", express.json(), chatRoutes);
+app.use("/utility", express.json(), utilityRoutes);
+
+// Image routes use multer, no JSON parsing needed
 app.use("/images", imageRoutes);
-app.use("/utility", utilityRoutes);
 
 app.get("/", (req, res) => {
   res.send("Valet Server is live!");
 });
 
-// New status endpoint
 app.get("/status", (req, res) => {
-  // Add any additional health checks here if needed
-  const isLive = true; // You can modify this based on actual service status
+  const isLive = true; // Add any additional health checks here if needed
   res.status(200).json({ isLive });
 });
 
 // Error handling middleware (catch route errors)
 app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
-  console.error('Route Error:', err);
+  console.error("Route Error:", err);
   res.status(500).json({ error: "Internal Server Error" });
 });
 
