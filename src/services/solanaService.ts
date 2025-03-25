@@ -8,6 +8,7 @@ export async function verifySolPayment(txSignature: string, senderWallet: string
   const transaction = await connection.getParsedTransaction(txSignature, "confirmed");
 
   if (!transaction) {
+    console.log(`Transaction ${txSignature} not found or not confirmed`);
     return false;
   }
 
@@ -23,32 +24,55 @@ export async function verifySolPayment(txSignature: string, senderWallet: string
   return !!transferInstruction;
 }
 
-// New method that accepts a dynamic amount in lamports
+// Verify SOL payment with dynamic amount
 export async function verifySolPaymentWithAmount(
   txSignature: string,
   senderWallet: string,
   requiredAmount: number
 ): Promise<boolean> {
-  const connection = new Connection(SOLANA_ENDPOINT, "confirmed");
-  const transaction = await connection.getParsedTransaction(txSignature, "confirmed");
+  try {
+    console.log("Verifying SOL payment with SOLANA_ENDPOINT:", SOLANA_ENDPOINT);
+    console.log("Transaction signature:", txSignature);
+    console.log("Sender wallet:", senderWallet);
+    console.log("Required amount (lamports):", requiredAmount);
 
-  if (!transaction) {
+    const connection = new Connection(SOLANA_ENDPOINT, "confirmed");
+    const transaction = await connection.getParsedTransaction(txSignature, {
+      commitment: "confirmed",
+      maxSupportedTransactionVersion: undefined, // Support all transaction versions
+    });
+
+    if (!transaction || !transaction.meta) {
+      console.log("Transaction not found or not confirmed yet:", transaction);
+      return false;
+    }
+
+    // Log full transaction instructions for debugging
+    console.log("Transaction instructions:", JSON.stringify(transaction.transaction.message.instructions, null, 2));
+
+    const transferInstruction = transaction.transaction.message.instructions.find(
+      (ix: any) =>
+        ix.programId.toString() === SystemProgram.programId.toString() &&
+        ix.parsed?.type === "transfer" &&
+        ix.parsed.info.source === senderWallet &&
+        ix.parsed.info.destination === RECEIVER_PUBLIC_KEY.toString() &&
+        ix.parsed.info.lamports === requiredAmount
+    );
+
+    if (!transferInstruction) {
+      console.log("No valid SOL transfer found in transaction. Expected conditions not met.");
+      return false;
+    }
+
+    console.log("SOL payment verified successfully:", JSON.stringify(transferInstruction, null, 2));
+    return true;
+  } catch (error) {
+    console.error("Error verifying SOL payment:", error);
     return false;
   }
-
-  const transferInstruction = transaction.transaction.message.instructions.find(
-    (ix: any) =>
-      ix.programId.toString() === SystemProgram.programId.toString() &&
-      ix.parsed?.type === "transfer" &&
-      ix.parsed.info.source === senderWallet &&
-      ix.parsed.info.destination === RECEIVER_PUBLIC_KEY.toString() &&
-      ix.parsed.info.lamports === requiredAmount
-  );
-
-  return !!transferInstruction;
 }
 
-// New method to verify custom token payment with enhanced debugging
+// Verify custom token payment with enhanced debugging
 export async function verifyTokenPayment(txSignature: string, senderWallet: string): Promise<boolean> {
   try {
     console.log("Verifying token payment with SOLANA_ENDPOINT:", SOLANA_ENDPOINT);
@@ -64,7 +88,6 @@ export async function verifyTokenPayment(txSignature: string, senderWallet: stri
       return false;
     }
 
-    // Log full transaction instructions for debugging
     console.log("Transaction instructions:", JSON.stringify(transaction.transaction.message.instructions, null, 2));
 
     const senderPublicKey = new PublicKey(senderWallet);
@@ -75,7 +98,6 @@ export async function verifyTokenPayment(txSignature: string, senderWallet: stri
     console.log("Expected receiverATA:", receiverATA.toString());
     console.log("Expected amount:", AGENT_CREATION_TOKEN_AMOUNT.toString());
 
-    // Check for token transfer instruction with flexible matching
     const tokenTransferInstruction = transaction.transaction.message.instructions.find(
       (ix: any) =>
         ix.programId.toString() === TOKEN_PROGRAM_ID.toString() &&
