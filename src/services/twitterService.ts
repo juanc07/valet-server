@@ -122,9 +122,16 @@ async function setupTwitterStreamListenerPaid(agent: Agent, db: any): Promise<bo
 
   stopTwitterStreamListener(agent.agentId);
 
-  // In-memory deduplication
   const processedTweets = new Set<string>();
-  setInterval(() => processedTweets.clear(), 60 * 60 * 1000); // Clear every hour
+  let replyCount = 3; // Start with 3 replies allowed
+  const STREAM_CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes, adjust as needed
+
+  // Reset reply count every 5 minutes to mimic polling interval
+  setInterval(() => {
+    replyCount = 3;
+    // processedTweets.clear(); // Uncomment if you want to allow reprocessing of tweets each interval
+    console.log(`Reset reply count to 3 for agent ${agent.agentId} at ${new Date().toISOString()}`);
+  }, STREAM_CHECK_INTERVAL_MS);
 
   try {
     const rules = await streamClient.v2.streamRules();
@@ -184,6 +191,12 @@ async function setupTwitterStreamListenerPaid(agent: Agent, db: any): Promise<bo
             return;
           }
 
+          // Check reply count for this interval
+          if (replyCount <= 0) {
+            console.log(`Skipping tweet ${tweetId} for agent ${agent.agentId}: Max 3 replies reached for this interval`);
+            return; // Don’t mark as replied
+          }
+
           const promptGenerator = new AgentPromptGenerator(agent);
           const prompt = promptGenerator.generatePrompt(`Reply to this mention from @${authorUsername}: "${tweetData.text}"\nPersonalize your response by addressing @${authorUsername} directly.`);
           console.log(`Generated prompt for tweet ${tweetId}: ${prompt}`);
@@ -208,6 +221,8 @@ async function setupTwitterStreamListenerPaid(agent: Agent, db: any): Promise<bo
           console.log(`Agent ${agent.agentId} replied to tweet ${tweetId}: ${replyText}`);
 
           await saveTweetReply(agent.agentId, tweetId, db, targetAgentId, authorUsername);
+          replyCount--;
+          console.log(`Reply count for agent ${agent.agentId} decremented to ${replyCount}`);
         } catch (error) {
           console.error(`Error processing tweet for agent ${agent.agentId}, tweet ID: ${(tweet.data || tweet).id || 'unknown'}:`, error);
         }
@@ -265,6 +280,9 @@ async function setupTwitterMentionsListenerPaid(agent: Agent, db: any) {
   let sinceId: string | undefined;
 
   const checkMentions = async (retries = 3, delayMs = 5000) => {
+    let replyCount = 3; // Reset to 3 at the start of each polling cycle
+    console.log(`Reset reply count to 3 for agent ${agent.agentId} at start of polling cycle`);
+
     try {
       console.log(`Polling mentions for agent ${agent.agentId} at ${new Date().toISOString()}`);
       const mentions = await client.v2.userMentionTimeline(twitterUserId, {
@@ -302,6 +320,12 @@ async function setupTwitterMentionsListenerPaid(agent: Agent, db: any) {
             continue;
           }
 
+          // Check reply count for this polling cycle
+          if (replyCount <= 0) {
+            console.log(`Skipping tweet ${tweetId} for agent ${agent.agentId}: Max 3 replies reached for this polling cycle`);
+            continue; // Don’t mark as replied
+          }
+
           const promptGenerator = new AgentPromptGenerator(agent);
           const prompt = promptGenerator.generatePrompt(`Reply to this mention from @${authorUsername}: "${tweet.text}"\nPersonalize your response by addressing @${authorUsername} directly.`);
           const aiResponse = await openai.chat.completions.create({
@@ -321,6 +345,8 @@ async function setupTwitterMentionsListenerPaid(agent: Agent, db: any) {
           });
           console.log(`Agent ${agent.agentId} replied to tweet ${tweetId}: ${replyText}`);
           await saveTweetReply(agent.agentId, tweetId, db, targetAgentId, authorUsername);
+          replyCount--;
+          console.log(`Reply count for agent ${agent.agentId} decremented to ${replyCount}`);
         }
       }
       scheduleNextPoll();
