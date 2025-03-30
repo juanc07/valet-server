@@ -36,3 +36,6 @@ export const AGENT_CREATION_SOL_AMOUNT = 0.01 * LAMPORTS_PER_SOL;
 // Custom token configurations
 export const TOKEN_MINT_ADDRESS = new PublicKey(process.env.VALET_TOKEN_ADDRESS || "2ex5kxL5ZKSxv6mJHf5EiM86ZYCGJp56JY1MjKrgpump"); // Use env variable with fallback
 export const AGENT_CREATION_TOKEN_AMOUNT = 1000 * Math.pow(10, 6); // 1000 tokens with 6 decimals
+
+//telegram
+export const MAX_TELEGRAM_REPLIES_PER_DAY = process.env.MAX_TELEGRAM_REPLIES_PER_DAY || '12';

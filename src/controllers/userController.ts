@@ -32,10 +32,22 @@ export const createUser = async (req: Request, res: Response) => {
   try {
     const db = await connectToDatabase();
     const user: Omit<User, "userId"> & { userId?: string } = req.body;
+
+    // Validate required fields
     if (!user.username || !user.email || !user.password) {
       console.log("Missing required fields:", { username: user.username, email: user.email, password: user.password });
       return res.status(400).json({ error: "username, email, and password are required" });
     }
+
+    // Check if a user with the same solanaWalletAddress already exists
+    if (user.solanaWalletAddress) {
+      const existingUser = await db.collection("users").findOne({ solanaWalletAddress: user.solanaWalletAddress });
+      if (existingUser) {
+        console.log("Duplicate wallet address detected:", user.solanaWalletAddress);
+        return res.status(400).json({ error: "A user with this Solana wallet address already exists" });
+      }
+    }
+
     const generatedUserId = uuidv4();
     const newUser: User = {
       ...user,

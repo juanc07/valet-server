@@ -7,6 +7,7 @@ import chatRoutes from "./routes/chatRoutes";
 import twitterRoutes from "./routes/twitterRoutes";
 import imageRoutes from "./routes/imageRoutes";
 import utilityRoutes from "./routes/utilityRoutes";
+import telegramRoutes from './routes/telegramRoutes';
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -43,6 +44,7 @@ app.use(apiKeyMiddleware);
 // Apply express.json() only to routes that need it
 app.use("/agents", express.json(), agentRoutes);
 app.use("/twitter", express.json(), twitterRoutes);
+app.use('/telegram', express.json(), telegramRoutes);
 app.use("/users", express.json(), userRoutes);
 app.use("/chat", express.json(), chatRoutes);
 app.use("/utility", express.json(), utilityRoutes);

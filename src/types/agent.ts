@@ -50,4 +50,8 @@ export interface Agent {
   createdBy: string;  // userId who created the agent
   profileImageId?: string;
   isTwitterPaid?: boolean;
+  telegramBotToken?: string; // Required if platforms includes "telegram"
+  telegramHandle?: string;   // Optional, e.g., @AgentName
+  telegramGroupId?: string;  // Optional, specific group to monitor
+  enableTelegramReplies?: boolean; // Optional, controls auto-replies
 }

@@ -1,6 +1,7 @@
 import app from "./app";
 import { connectToDatabase } from "./services/dbService";
 import { setupTwitterListeners } from "./services/twitterService";
+import { setupTelegramListeners } from './services/telegramService';
 import { PORT } from "./config";
 
 // Handle uncaught exceptions (synchronous errors)
@@ -19,6 +20,7 @@ async function startServer() {
   try {
     const db = await connectToDatabase();
     await setupTwitterListeners(db);
+    await setupTelegramListeners(db);
     app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
     });
