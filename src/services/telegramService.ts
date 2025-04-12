@@ -90,7 +90,7 @@ export async function setupTelegramListener(agent: Agent) {
           const user = await db.collection("users").findOne({
             $or: [
               { "linked_channels.telegram_user_id": userId },
-              { "telegramId": username },
+              { "telegramId": { $in: [username, `@${username}`] } }, // Match both username and @username
             ],
           });
           let unified_user_id: string | undefined;

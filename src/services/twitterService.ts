@@ -1,4 +1,3 @@
-// src/services/twitterService.ts
 import { TwitterApi, TwitterApiTokens, TweetV2 } from "twitter-api-v2";
 import OpenAI from "openai";
 import { v4 as uuidv4 } from "uuid";
@@ -275,6 +274,7 @@ async function setupTwitterStreamListenerPaid(agent: Agent, db: any): Promise<bo
                     }
                   : undefined,
               max_retries: classification.task_type !== "chat" ? 3 : undefined,
+              notified: false, // Initialize as not notified
             };
             await saveTask(task);
             console.log(`Saved task ${task_id} for tweet ${tweetId}: ${tweet.text}`);
@@ -328,6 +328,7 @@ async function setupTwitterStreamListenerPaid(agent: Agent, db: any): Promise<bo
               status: "failed",
               result: "Error processing request",
               completed_at: new Date(),
+              notified: false, // Ensure failed tasks can be notified
             });
           }
         }
@@ -499,6 +500,7 @@ async function setupTwitterMentionsListenerPaid(agent: Agent, db: any) {
                       }
                     : undefined,
                 max_retries: classification.task_type !== "chat" ? 3 : undefined,
+                notified: false, // Initialize as not notified
               };
               await saveTask(task);
               console.log(`Saved task ${task_id} for tweet ${tweetId}: ${tweet.text}`);
@@ -548,6 +550,7 @@ async function setupTwitterMentionsListenerPaid(agent: Agent, db: any) {
                 status: "failed",
                 result: "Error processing request",
                 completed_at: new Date(),
+                notified: false, // Ensure failed tasks can be notified
               });
             }
           }
@@ -699,6 +702,7 @@ async function setupTwitterPollListenerPaid(agent: Agent, db: any) {
                       }
                     : undefined,
                 max_retries: classification.task_type !== "chat" ? 3 : undefined,
+                notified: false, // Initialize as not notified
               };
               await saveTask(task);
               console.log(`Saved task ${task_id} for tweet ${tweetId}: ${tweet.text}`);
@@ -744,6 +748,7 @@ async function setupTwitterPollListenerPaid(agent: Agent, db: any) {
                 status: "failed",
                 result: "Error processing request",
                 completed_at: new Date(),
+                notified: false, // Ensure failed tasks can be notified
               });
             }
           }

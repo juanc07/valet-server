@@ -5,6 +5,7 @@ import { Task } from "../types/task";
 import { Agent } from "../types/agent";
 import { TWITTER_INTEGRATION, TWITTER_APP_KEY, TWITTER_APP_SECRET } from "../config";
 import { getTelegramBot } from "./telegramService";
+import axios from "axios";
 
 export class TaskMonitor {
   private static pollingInterval: NodeJS.Timeout | null = null;
@@ -104,13 +105,64 @@ export class TaskMonitor {
         const username = await this.getTwitterUsername(task.channel_user_id, twitterClient);
         if (username) {
           try {
-            await twitterClient.v2.tweet({
+            const tweetOptions: any = {
               text: `@${username} ${message.slice(0, 280 - username.length - 2)}`,
               reply: { in_reply_to_tweet_id: task.channel_id.replace("twitter_", "") },
-            });
+            };
+
+            // Handle image generation tasks
+            if (
+              task.task_type === "api_call" &&
+              task.status === "completed" &&
+              task.result &&
+              task.external_service?.service_name === "image_generation"
+            ) {
+              if (this.isValidImageUrl(task.result)) {
+                // Download the image
+                const response = await axios.get(task.result, { responseType: "arraybuffer" });
+                const imageBuffer = Buffer.from(response.data, "binary");
+                console.log(`Downloaded image for task ${task.task_id}: ${task.result}`);
+
+                // Upload the image to Twitter
+                const mediaId = await twitterClient.v1.uploadMedia(imageBuffer, { mimeType: "image/png" });
+                console.log(`Uploaded image to Twitter for task ${task.task_id}, mediaId: ${mediaId}`);
+
+                // Attach the media to the tweet
+                tweetOptions.media = { media_ids: [mediaId] };
+              } else {
+                await twitterClient.v2.tweet({
+                  text: `@${username} Error: Invalid image generated. Please try again.`,
+                  reply: { in_reply_to_tweet_id: task.channel_id.replace("twitter_", "") },
+                });
+                await db.collection("tasks").updateOne(
+                  { task_id: task.task_id },
+                  { $set: { status: "failed", result: "Invalid image URL", completed_at: new Date(), notified: false } }
+                );
+                console.error(`Invalid image URL for task ${task.task_id}: ${task.result}`);
+                return;
+              }
+            }
+
+            await twitterClient.v2.tweet(tweetOptions);
             console.log(`Notified Twitter user ${username} for task ${task.task_id}: ${message}`);
+            if (tweetOptions.media) {
+              console.log(`Attached image to tweet for task ${task.task_id}, mediaId: ${tweetOptions.media.media_ids[0]}`);
+            }
           } catch (error) {
             console.error(`Error notifying Twitter user for task ${task.task_id}:`, error);
+            try {
+              await twitterClient.v2.tweet({
+                text: `@${username} Failed to process your request. Please try again.`,
+                reply: { in_reply_to_tweet_id: task.channel_id.replace("twitter_", "") },
+              });
+              await db.collection("tasks").updateOne(
+                { task_id: task.task_id },
+                { $set: { status: "failed", result: "Notification error", completed_at: new Date(), notified: false } }
+              );
+              console.log(`Marked task ${task.task_id} as failed due to notification error`);
+            } catch (sendError) {
+              console.error(`Error sending fallback message for task ${task.task_id}:`, sendError);
+            }
           }
         } else {
           console.error(`No Twitter username found for user ${task.channel_user_id}, task ${task.task_id}`);
