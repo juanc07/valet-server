@@ -1,1 +1,3 @@
-export { connectToDatabase } from "../db";
+export { connectToDatabase,saveTemporaryUser,findTemporaryUserByChannelId,updateTemporaryUser,
+    saveLinkingCode,findLinkingCode,deleteLinkingCode
+ } from "../db";

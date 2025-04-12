@@ -31,7 +31,7 @@ const CREDIT_PRICES = {
 export const createUser = async (req: Request, res: Response) => {
   try {
     const db = await connectToDatabase();
-    const user: Omit<User, "userId"> & { userId?: string } = req.body;
+    const user: Omit<User, "userId" | "_id"> & { userId?: string } = req.body;
 
     // Validate required fields
     if (!user.username || !user.email || !user.password) {
@@ -57,7 +57,7 @@ export const createUser = async (req: Request, res: Response) => {
     console.log("Creating user:", newUser);
     const result = await db.collection("users").insertOne(newUser);
     console.log("User created, insertedId:", result.insertedId);
-    res.status(201).json({ _id: result.insertedId, ...newUser });
+    res.status(201).json({ _id: result.insertedId.toString(), ...newUser }); // Convert ObjectId to string
   } catch (error) {
     console.error("Error creating user:", error);
     res.status(500).json({ error: "Failed to create user", details: error });
@@ -72,7 +72,7 @@ export const getUser = async (req: Request<UserParams>, res: Response) => {
     if (!user) {
       res.status(404).json({ error: "User not found" });
     } else {
-      res.status(200).json(user);
+      res.status(200).json({ ...user, _id: user._id?.toString() }); // Convert ObjectId to string
     }
   } catch (error) {
     console.error("Error fetching user:", error);
@@ -99,7 +99,7 @@ export const getUserByWallet = async (req: Request<{ solanaWalletAddress: string
     console.log("getUserByWallet found user:", user || "null");
 
     res.status(200).json({
-      user: user || null,
+      user: user ? { ...user, _id: user._id?.toString() } : null, // Convert ObjectId to string
     });
   } catch (error) {
     console.error("Error fetching user by wallet:", error);
@@ -111,7 +111,7 @@ export const getAllUsers = async (req: Request, res: Response) => {
   try {
     const db = await connectToDatabase();
     const users = await db.collection("users").find().toArray();
-    res.status(200).json(users);
+    res.status(200).json(users.map(user => ({ ...user, _id: user._id?.toString() }))); // Convert ObjectId to string
   } catch (error) {
     console.error("Error fetching all users:", error);
     res.status(500).json({ error: "Failed to fetch users" });

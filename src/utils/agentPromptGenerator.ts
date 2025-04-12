@@ -1,4 +1,4 @@
-import { Agent } from "./types/agent";
+import { Agent } from "../types/agent";
 
 export class AgentPromptGenerator {
   private agent: Agent;

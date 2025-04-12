@@ -8,6 +8,7 @@ import twitterRoutes from "./routes/twitterRoutes";
 import imageRoutes from "./routes/imageRoutes";
 import utilityRoutes from "./routes/utilityRoutes";
 import telegramRoutes from './routes/telegramRoutes';
+import taskRoutes from "./routes/taskRoutes";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -48,6 +49,7 @@ app.use('/telegram', express.json(), telegramRoutes);
 app.use("/users", express.json(), userRoutes);
 app.use("/chat", express.json(), chatRoutes);
 app.use("/utility", express.json(), utilityRoutes);
+app.use("/tasks", express.json(), taskRoutes); 
 
 // Image routes use multer, no JSON parsing needed
 app.use("/images", imageRoutes);

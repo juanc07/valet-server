@@ -1,7 +1,9 @@
-import { TwitterApi, TwitterApiTokens, TweetStream } from "twitter-api-v2";
+import { TwitterApi, TwitterApiTokens, TweetV2 } from "twitter-api-v2";
 import OpenAI from "openai";
+import { v4 as uuidv4 } from "uuid";
 import { hasValidTwitterCredentials } from "../utils/twitterUtils";
 import { Agent } from "../types/agent";
+import { Task } from "../types/task";
 import {
   twitterStreams,
   postingIntervals,
@@ -14,7 +16,7 @@ import {
   canPostTweetForAgent,
   canReplyToMentionForAgent,
   incrementAgentPostCount,
-  incrementAgentReplyCount
+  incrementAgentReplyCount,
 } from "../controllers/agentController";
 import {
   TWITTER_INTEGRATION,
@@ -25,9 +27,14 @@ import {
   MENTION_POLL_MAX_MINUTES,
   TWITTER_MENTION_CHECK_ENABLED,
   TWITTER_AUTO_POSTING_ENABLED,
-  TWITTER_AUTO_POSTING_MIN_INTERVAL
+  TWITTER_AUTO_POSTING_MIN_INTERVAL,
+  FRONTEND_URL,
 } from "../config";
-import { AgentPromptGenerator } from "../agentPromptGenerator";
+import { AgentPromptGenerator } from "../utils/agentPromptGenerator";
+import { findTemporaryUserByChannelId, saveTemporaryUser, saveLinkingCode, findLinkingCode, deleteLinkingCode, updateTemporaryUser } from "../services/dbService";
+import { saveTask, getRecentTasks, updateTask } from "../controllers/taskController";
+import { shouldSaveAsTask } from "../utils/criteriaUtils"; // Import the new utility
+import { TaskClassifier } from "../utils/TaskClassifier";
 
 // Helper to fetch Twitter user ID from handle
 async function getTwitterUserId(handle: string, client: TwitterApi): Promise<string | undefined> {
@@ -36,6 +43,9 @@ async function getTwitterUserId(handle: string, client: TwitterApi): Promise<str
     const response = await client.v2.userByUsername(handle.replace('@', ''), {
       "user.fields": ["id"],
     });
+    if (!response.data?.id) {
+      throw new Error("User ID not found in response");
+    }
     console.log(`Fetched user ID for ${handle}: ${response.data.id}`);
     return response.data.id;
   } catch (error) {
@@ -56,6 +66,9 @@ async function getUsernameFromId(userId: string, client: TwitterApi, db: any): P
 
     console.log(`Cache miss, fetching username from Twitter API for user ID ${userId}`);
     const response = await client.v2.user(userId, { "user.fields": ["username"] });
+    if (!response.data?.username) {
+      throw new Error("Username not found in response");
+    }
     const username = response.data.username;
     console.log(`Fetched username for ID ${userId}: ${username}`);
 
@@ -69,10 +82,9 @@ async function getUsernameFromId(userId: string, client: TwitterApi, db: any): P
         console.log(`Rate limit hit, using cached username for ${userId}: ${cachedFallback}`);
         return cachedFallback;
       }
-      console.warn(`Rate limit hit for user ID ${userId}, no cache available. Using placeholder`);
-      return `user_${userId}`; // Unique placeholder instead of "friend"
     }
-    throw error; // Rethrow other errors for upstream handling
+    console.warn(`Failed to fetch username for user ID ${userId}, using placeholder`);
+    return `user_${userId}`; // Fallback to prevent crashes
   }
 }
 
@@ -129,8 +141,8 @@ async function setupTwitterStreamListenerPaid(agent: Agent, db: any): Promise<bo
   // Reset reply count every 5 minutes to mimic polling interval
   setInterval(() => {
     replyCount = 3;
-    // processedTweets.clear(); // Uncomment if you want to allow reprocessing of tweets each interval
-    console.log(`Reset reply count to 3 for agent ${agent.agentId} at ${new Date().toISOString()}`);
+    processedTweets.clear(); // Allow reprocessing of tweets each interval
+    console.log(`Reset reply count to 3 and cleared processed tweets for agent ${agent.agentId} at ${new Date().toISOString()}`);
   }, STREAM_CHECK_INTERVAL_MS);
 
   try {
@@ -150,16 +162,17 @@ async function setupTwitterStreamListenerPaid(agent: Agent, db: any): Promise<bo
     if (!stream) {
       console.log(`Starting new Twitter stream for agent ${agent.agentId}...`);
       stream = await streamClient.v2.searchStream({
-        "tweet.fields": ["author_id", "text", "created_at"],
+        "tweet.fields": ["author_id", "text", "created_at", "conversation_id"],
         autoConnect: true,
       });
       twitterStreams.set(agent.agentId, stream);
       console.log(`Twitter stream started for agent ${agent.agentId}`);
 
-      stream.on("data", async (tweet) => {
+      stream.on("data", async (tweet: TweetV2) => {
+        let task_id: string | undefined; // Define task_id for error handling
         try {
-          const tweetData = tweet.data || tweet;
-          const tweetId = tweetData.id;
+          const tweetId = tweet.id;
+          const conversationId = tweet.conversation_id || tweetId; // Fallback to tweetId if conversation_id is missing
 
           if (processedTweets.has(tweetId)) {
             console.log(`Tweet ${tweetId} already processed for agent ${agent.agentId}, skipping`);
@@ -167,13 +180,13 @@ async function setupTwitterStreamListenerPaid(agent: Agent, db: any): Promise<bo
           }
           processedTweets.add(tweetId);
 
-          if (!tweetData.author_id) {
-            console.error(`No author_id in tweet for agent ${agent.agentId}:`, tweetData);
+          if (!tweet.author_id) {
+            console.error(`No author_id in tweet for agent ${agent.agentId}:`, tweet);
             return;
           }
 
-          console.log(`Processing tweet ${tweetId}:`, JSON.stringify(tweetData, null, 2));
-          const authorUsername = await getUsernameFromId(tweetData.author_id, postClient, db);
+          console.log(`Processing tweet ${tweetId}:`, JSON.stringify(tweet, null, 2));
+          const authorUsername = await getUsernameFromId(tweet.author_id, postClient, db);
 
           if (!authorUsername || authorUsername === agent.twitterHandle) {
             console.log(`Skipping self-mention or invalid author for tweet ${tweetId}`);
@@ -197,8 +210,66 @@ async function setupTwitterStreamListenerPaid(agent: Agent, db: any): Promise<bo
             return; // Don’t mark as replied
           }
 
+          // Identify the user (registered or unregistered)
+          const user = await db.collection("users").findOne({
+            $or: [
+              { "linked_channels.twitter_user_id": tweet.author_id },
+              { twitterHandle: authorUsername },
+            ],
+          });
+          let unified_user_id: string | undefined;
+          let temporary_user_id: string | undefined;
+
+          if (user) {
+            unified_user_id = user.userId;
+            console.log(`User ${unified_user_id} found for Twitter user ${tweet.author_id}`);
+          } else {
+            const tempUser = await findTemporaryUserByChannelId("twitter_user_id", tweet.author_id);
+            if (tempUser) {
+              temporary_user_id = tempUser.temporary_user_id;
+              console.log(`Temporary user ${temporary_user_id} found for Twitter user ${tweet.author_id}`);
+            }
+          }
+
+          // Retrieve recent tasks to check for context
+          const recentTasks = await getRecentTasks(
+            {
+              unified_user_id,
+              temporary_user_id,
+              channel_user_id: tweet.author_id,
+            },
+            agent.settings?.max_memory_context || 5
+          );
+          const hasRecentTasks = recentTasks.length > 0;
+          const context = recentTasks.map(t => `Command: ${t.command}, Result: ${t.result || "Pending"}`).join("\n");
+
+          // Determine if the tweet should be saved as a task
+          const shouldSaveTask = shouldSaveAsTask(tweet.text || "No text provided", hasRecentTasks);
+          const classification = await TaskClassifier.classifyTask(tweet.text, agent, recentTasks);
+          if (classification.task_type !== "chat" || shouldSaveTask) {
+            task_id = uuidv4();
+            const task: Task = {
+              task_id,
+              channel_id: conversationId,
+              channel_user_id: tweet.author_id,
+              unified_user_id,
+              temporary_user_id,
+              command: tweet.text || "No text provided",
+              status: "in_progress",
+              created_at: new Date(),
+              completed_at: null, // Set to null since the task is not completed yet
+              agent_id: agent.agentId,
+            };
+            await saveTask(task);
+          } else {
+            console.log(`Tweet not saved as task, but will still respond: "${tweet.text}"`);
+          }
+
+          // Generate the prompt with context
           const promptGenerator = new AgentPromptGenerator(agent);
-          const prompt = promptGenerator.generatePrompt(`Reply to this mention from @${authorUsername}: "${tweetData.text}"\nPersonalize your response by addressing @${authorUsername} directly.`);
+          const prompt = promptGenerator.generatePrompt(
+            `Reply to this mention from @${authorUsername}: "${tweet.text || "No text provided"}"\nPersonalize your response by addressing @${authorUsername} directly.\nPrevious interactions:\n${context || "None"}`
+          );
           console.log(`Generated prompt for tweet ${tweetId}: ${prompt}`);
 
           const aiResponse = await openai.chat.completions.create({
@@ -207,6 +278,12 @@ async function setupTwitterStreamListenerPaid(agent: Agent, db: any): Promise<bo
           });
           let responseText = aiResponse.choices[0]?.message?.content || `Sorry, @${authorUsername}, I couldn't generate a response.`;
           responseText = responseText.replace(/[\u{1F600}-\u{1F6FF}]/gu, '').replace(/#\w+/g, '');
+
+          // Add registration/linking prompt for unregistered users
+          if (!unified_user_id) {
+            responseText += `\nTo save your preferences and use me across channels, reply with 'register' to create an account or 'link' to connect with other channels!`;
+          }
+
           const replyText = `@${authorUsername} ${responseText}`.slice(0, 280);
           console.log(`Prepared reply for tweet ${tweetId}: ${replyText}`);
 
@@ -220,11 +297,78 @@ async function setupTwitterStreamListenerPaid(agent: Agent, db: any): Promise<bo
           });
           console.log(`Agent ${agent.agentId} replied to tweet ${tweetId}: ${replyText}`);
 
+          // Update the task in Memory if it was saved
+          if (task_id) {
+            await updateTask(task_id, { 
+              status: "completed", 
+              result: replyText,
+              completed_at: new Date(), // Set completed_at to current date
+            });
+          }
+
           await saveTweetReply(agent.agentId, tweetId, db, targetAgentId, authorUsername);
           replyCount--;
           console.log(`Reply count for agent ${agent.agentId} decremented to ${replyCount}`);
+
+          // Handle registration or linking requests
+          if (!unified_user_id && tweet.text?.toLowerCase().includes("register")) {
+            const linking_code = uuidv4().slice(0, 8);
+            const expires_at = new Date(Date.now() + 60 * 60 * 1000); // 1-hour expiration
+            await saveLinkingCode(tweet.author_id, linking_code, expires_at);
+            await postClient.v2.tweet({
+              text: `@${authorUsername} Please visit ${FRONTEND_URL}/register and use this code to register: ${linking_code}`,
+              reply: { in_reply_to_tweet_id: tweetId },
+            });
+          } else if (!unified_user_id && tweet.text?.toLowerCase().includes("link")) {
+            const linking_code = uuidv4().slice(0, 8);
+            const expires_at = new Date(Date.now() + 60 * 60 * 1000); // 1-hour expiration
+            await saveLinkingCode(tweet.author_id, linking_code, expires_at);
+            await postClient.v2.tweet({
+              text: `@${authorUsername} Use this code on another channel to link your accounts: ${linking_code}`,
+              reply: { in_reply_to_tweet_id: tweetId },
+            });
+          } else if (!unified_user_id && tweet.text?.toLowerCase().startsWith("link ")) {
+            const linking_code = tweet.text.split(" ")[1];
+            const linkingData = await findLinkingCode(linking_code);
+            if (linkingData && linkingData.expires_at > new Date()) {
+              let tempUser = await findTemporaryUserByChannelId("twitter_user_id", linkingData.channel_user_id);
+              if (!tempUser) {
+                tempUser = {
+                  temporary_user_id: uuidv4(),
+                  linked_channels: { twitter_user_id: linkingData.channel_user_id },
+                  created_at: new Date(),
+                  expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+                };
+                await saveTemporaryUser(tempUser);
+              }
+              tempUser.linked_channels.twitter_user_id = tweet.author_id;
+              await updateTemporaryUser(tempUser.temporary_user_id, tempUser);
+              await deleteLinkingCode(linking_code);
+              await postClient.v2.tweet({
+                text: `@${authorUsername} Accounts linked! I’ll recognize you across channels now.`,
+                reply: { in_reply_to_tweet_id: tweetId },
+              });
+              // Update existing tasks with the temporary_user_id
+              await db.collection("tasks").updateMany(
+                { channel_user_id: { $in: [linkingData.channel_user_id, tweet.author_id] } },
+                { $set: { temporary_user_id: tempUser.temporary_user_id } }
+              );
+            } else {
+              await postClient.v2.tweet({
+                text: `@${authorUsername} Invalid or expired linking code. Reply with 'link' to get a new one.`,
+                reply: { in_reply_to_tweet_id: tweetId },
+              });
+            }
+          }
         } catch (error) {
-          console.error(`Error processing tweet for agent ${agent.agentId}, tweet ID: ${(tweet.data || tweet).id || 'unknown'}:`, error);
+          console.error(`Error processing tweet for agent ${agent.agentId}, tweet ID: ${tweet.id || 'unknown'}:`, error);
+          if (task_id) {
+            await updateTask(task_id, { 
+              status: "failed", 
+              result: "Error processing request",
+              completed_at: new Date(), // Set completed_at even on failure
+            });
+          }
         }
       });
 
@@ -286,7 +430,7 @@ async function setupTwitterMentionsListenerPaid(agent: Agent, db: any) {
     try {
       console.log(`Polling mentions for agent ${agent.agentId} at ${new Date().toISOString()}`);
       const mentions = await client.v2.userMentionTimeline(twitterUserId, {
-        "tweet.fields": ["author_id", "text", "created_at"],
+        "tweet.fields": ["author_id", "text", "created_at", "conversation_id"],
         since_id: sinceId,
         max_results: 10,
       });
@@ -297,56 +441,193 @@ async function setupTwitterMentionsListenerPaid(agent: Agent, db: any) {
       if (tweets.length > 0) {
         sinceId = tweets[0].id;
         for (const tweet of tweets) {
-          if (!tweet.author_id) {
-            console.error(`No author_id in tweet for agent ${agent.agentId}:`, tweet);
-            continue;
+          let task_id: string | undefined; // Define task_id for error handling
+          try {
+            if (!tweet.author_id) {
+              console.error(`No author_id in tweet for agent ${agent.agentId}:`, tweet);
+              continue;
+            }
+
+            const tweetId = tweet.id;
+            const conversationId = tweet.conversation_id || tweetId; // Fallback to tweetId if conversation_id is missing
+            const authorUsername = await getUsernameFromId(tweet.author_id, client, db);
+            if (!authorUsername || authorUsername === agent.twitterHandle) {
+              console.log(`Skipping self-mention or invalid author for tweet ${tweetId}`);
+              continue;
+            }
+
+            const hasReplied = await hasRepliedToTweet(agent.agentId, tweetId, db, authorUsername);
+            if (hasReplied) {
+              console.log(`Skipping tweet ${tweetId}: Already replied or cooldown active`);
+              continue;
+            }
+
+            if (!(await canReplyToMentionForAgent(agent.agentId, db))) {
+              console.log(`Skipping tweet ${tweetId}: Daily reply limit reached`);
+              continue;
+            }
+
+            // Check reply count for this polling cycle
+            if (replyCount <= 0) {
+              console.log(`Skipping tweet ${tweetId} for agent ${agent.agentId}: Max 3 replies reached for this polling cycle`);
+              continue; // Don’t mark as replied
+            }
+
+            // Identify the user (registered or unregistered)
+            const user = await db.collection("users").findOne({
+              $or: [
+                { "linked_channels.twitter_user_id": tweet.author_id },
+                { twitterHandle: authorUsername },
+              ],
+            });
+            let unified_user_id: string | undefined;
+            let temporary_user_id: string | undefined;
+
+            if (user) {
+              unified_user_id = user.userId;
+              console.log(`User ${unified_user_id} found for Twitter user ${tweet.author_id}`);
+            } else {
+              const tempUser = await findTemporaryUserByChannelId("twitter_user_id", tweet.author_id);
+              if (tempUser) {
+                temporary_user_id = tempUser.temporary_user_id;
+                console.log(`Temporary user ${temporary_user_id} found for Twitter user ${tweet.author_id}`);
+              }
+            }
+
+            // Retrieve recent tasks to check for context
+            const recentTasks = await getRecentTasks(
+              {
+                unified_user_id,
+                temporary_user_id,
+                channel_user_id: tweet.author_id,
+              },
+              agent.settings?.max_memory_context || 5
+            );
+            const hasRecentTasks = recentTasks.length > 0;
+            const context = recentTasks.map(t => `Command: ${t.command}, Result: ${t.result || "Pending"}`).join("\n");
+
+            // Determine if the tweet should be saved as a task
+            const shouldSaveTask = shouldSaveAsTask(tweet.text || "No text provided", hasRecentTasks);
+            const classification = await TaskClassifier.classifyTask(tweet.text, agent, recentTasks);
+          if (classification.task_type !== "chat" || shouldSaveTask) {            
+              task_id = uuidv4();
+              const task: Task = {
+                task_id,
+                channel_id: conversationId,
+                channel_user_id: tweet.author_id,
+                unified_user_id,
+                temporary_user_id,
+                command: tweet.text || "No text provided",
+                status: "in_progress",
+                created_at: new Date(),
+                completed_at: null, // Set to null since the task is not completed yet
+                agent_id: agent.agentId,
+              };
+              await saveTask(task);
+            } else {
+              console.log(`Tweet not saved as task, but will still respond: "${tweet.text}"`);
+            }
+
+            // Generate the prompt with context
+            const promptGenerator = new AgentPromptGenerator(agent);
+            const prompt = promptGenerator.generatePrompt(
+              `Reply to this mention from @${authorUsername}: "${tweet.text || "No text provided"}"\nPersonalize your response by addressing @${authorUsername} directly.\nPrevious interactions:\n${context || "None"}`
+            );
+            const aiResponse = await openai.chat.completions.create({
+              model: "gpt-3.5-turbo",
+              messages: [{ role: "user", content: prompt }],
+            });
+            let responseText = aiResponse.choices[0]?.message?.content || `Sorry, @${authorUsername}, I couldn't generate a response.`;
+            responseText = responseText.replace(/[\u{1F600}-\u{1F6FF}]/gu, '').replace(/#\w+/g, '');
+
+            // Add registration/linking prompt for unregistered users
+            if (!unified_user_id) {
+              responseText += `\nTo save your preferences and use me across channels, reply with 'register' to create an account or 'link' to connect with other channels!`;
+            }
+
+            const replyText = `@${authorUsername} ${responseText}`.slice(0, 280);
+
+            const targetAgent = await getAgentByTwitterHandle(authorUsername.trim().toLowerCase(), db);
+            const targetAgentId = targetAgent ? targetAgent.agentId : undefined;
+
+            await client.v2.tweet({
+              text: replyText,
+              reply: { in_reply_to_tweet_id: tweetId },
+            });
+            console.log(`Agent ${agent.agentId} replied to tweet ${tweetId}: ${replyText}`);
+
+            // Update the task in Memory if it was saved
+            if (task_id) {
+              await updateTask(task_id, { 
+                status: "completed", 
+                result: replyText,
+                completed_at: new Date(), // Set completed_at to current date
+              });
+            }
+
+            await saveTweetReply(agent.agentId, tweetId, db, targetAgentId, authorUsername);
+            replyCount--;
+            console.log(`Reply count for agent ${agent.agentId} decremented to ${replyCount}`);
+
+            // Handle registration or linking requests
+            if (!unified_user_id && tweet.text?.toLowerCase().includes("register")) {
+              const linking_code = uuidv4().slice(0, 8);
+              const expires_at = new Date(Date.now() + 60 * 60 * 1000); // 1-hour expiration
+              await saveLinkingCode(tweet.author_id, linking_code, expires_at);
+              await client.v2.tweet({
+                text: `@${authorUsername} Please visit ${FRONTEND_URL}/register and use this code to register: ${linking_code}`,
+                reply: { in_reply_to_tweet_id: tweetId },
+              });
+            } else if (!unified_user_id && tweet.text?.toLowerCase().includes("link")) {
+              const linking_code = uuidv4().slice(0, 8);
+              const expires_at = new Date(Date.now() + 60 * 60 * 1000); // 1-hour expiration
+              await saveLinkingCode(tweet.author_id, linking_code, expires_at);
+              await client.v2.tweet({
+                text: `@${authorUsername} Use this code on another channel to link your accounts: ${linking_code}`,
+                reply: { in_reply_to_tweet_id: tweetId },
+              });
+            } else if (!unified_user_id && tweet.text?.toLowerCase().startsWith("link ")) {
+              const linking_code = tweet.text.split(" ")[1];
+              const linkingData = await findLinkingCode(linking_code);
+              if (linkingData && linkingData.expires_at > new Date()) {
+                let tempUser = await findTemporaryUserByChannelId("twitter_user_id", linkingData.channel_user_id);
+                if (!tempUser) {
+                  tempUser = {
+                    temporary_user_id: uuidv4(),
+                    linked_channels: { twitter_user_id: linkingData.channel_user_id },
+                    created_at: new Date(),
+                    expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+                  };
+                  await saveTemporaryUser(tempUser);
+                }
+                tempUser.linked_channels.twitter_user_id = tweet.author_id;
+                await updateTemporaryUser(tempUser.temporary_user_id, tempUser);
+                await deleteLinkingCode(linking_code);
+                await client.v2.tweet({
+                  text: `@${authorUsername} Accounts linked! I’ll recognize you across channels now.`,
+                  reply: { in_reply_to_tweet_id: tweetId },
+                });
+                await db.collection("tasks").updateMany(
+                  { channel_user_id: { $in: [linkingData.channel_user_id, tweet.author_id] } },
+                  { $set: { temporary_user_id: tempUser.temporary_user_id } }
+                );
+              } else {
+                await client.v2.tweet({
+                  text: `@${authorUsername} Invalid or expired linking code. Reply with 'link' to get a new one.`,
+                  reply: { in_reply_to_tweet_id: tweetId },
+                });
+              }
+            }
+          } catch (error) {
+            console.error(`Error processing tweet for agent ${agent.agentId}, tweet ID: ${tweet.id}:`, error);
+            if (task_id) {
+              await updateTask(task_id, { 
+                status: "failed", 
+                result: "Error processing request",
+                completed_at: new Date(), // Set completed_at even on failure
+              });
+            }
           }
-
-          const tweetId = tweet.id;
-          const authorUsername = await getUsernameFromId(tweet.author_id, client, db);
-          if (!authorUsername || authorUsername === agent.twitterHandle) {
-            console.log(`Skipping self-mention or invalid author for tweet ${tweetId}`);
-            continue;
-          }
-
-          const hasReplied = await hasRepliedToTweet(agent.agentId, tweetId, db, authorUsername);
-          if (hasReplied) {
-            console.log(`Skipping tweet ${tweetId}: Already replied or cooldown active`);
-            continue;
-          }
-
-          if (!(await canReplyToMentionForAgent(agent.agentId, db))) {
-            console.log(`Skipping tweet ${tweetId}: Daily reply limit reached`);
-            continue;
-          }
-
-          // Check reply count for this polling cycle
-          if (replyCount <= 0) {
-            console.log(`Skipping tweet ${tweetId} for agent ${agent.agentId}: Max 3 replies reached for this polling cycle`);
-            continue; // Don’t mark as replied
-          }
-
-          const promptGenerator = new AgentPromptGenerator(agent);
-          const prompt = promptGenerator.generatePrompt(`Reply to this mention from @${authorUsername}: "${tweet.text}"\nPersonalize your response by addressing @${authorUsername} directly.`);
-          const aiResponse = await openai.chat.completions.create({
-            model: "gpt-3.5-turbo",
-            messages: [{ role: "user", content: prompt }],
-          });
-          let responseText = aiResponse.choices[0]?.message?.content || `Sorry, @${authorUsername}, I couldn't generate a response.`;
-          responseText = responseText.replace(/[\u{1F600}-\u{1F6FF}]/gu, '').replace(/#\w+/g, '');
-          const replyText = `@${authorUsername} ${responseText}`.slice(0, 280);
-
-          const targetAgent = await getAgentByTwitterHandle(authorUsername.trim().toLowerCase(), db);
-          const targetAgentId = targetAgent ? targetAgent.agentId : undefined;
-
-          await client.v2.tweet({
-            text: replyText,
-            reply: { in_reply_to_tweet_id: tweetId },
-          });
-          console.log(`Agent ${agent.agentId} replied to tweet ${tweetId}: ${replyText}`);
-          await saveTweetReply(agent.agentId, tweetId, db, targetAgentId, authorUsername);
-          replyCount--;
-          console.log(`Reply count for agent ${agent.agentId} decremented to ${replyCount}`);
         }
       }
       scheduleNextPoll();
@@ -408,7 +689,7 @@ async function setupTwitterPollListenerPaid(agent: Agent, db: any) {
       console.log(`Polling mentions for agent ${agent.agentId} with query: ${query}`);
       const response = await client.v2.search({
         query,
-        "tweet.fields": ["author_id", "text", "created_at"],
+        "tweet.fields": ["author_id", "text", "created_at", "conversation_id"],
         since_id: sinceId,
         max_results: 10,
       });
@@ -417,36 +698,173 @@ async function setupTwitterPollListenerPaid(agent: Agent, db: any) {
       if (tweets.length > 0) {
         sinceId = tweets[0].id;
         for (const tweet of tweets) {
-          if (!tweet.author_id) continue;
+          let task_id: string | undefined; // Define task_id for error handling
+          try {
+            if (!tweet.author_id) continue;
 
-          const tweetId = tweet.id;
-          const authorUsername = await getUsernameFromId(tweet.author_id, client, db);
-          if (!authorUsername || authorUsername === agent.twitterHandle) continue;
+            const tweetId = tweet.id;
+            const conversationId = tweet.conversation_id || tweetId; // Fallback to tweetId if conversation_id is missing
+            const authorUsername = await getUsernameFromId(tweet.author_id, client, db);
+            if (!authorUsername || authorUsername === agent.twitterHandle) continue;
 
-          const hasReplied = await hasRepliedToTweet(agent.agentId, tweetId, db, authorUsername);
-          if (hasReplied) continue;
+            const hasReplied = await hasRepliedToTweet(agent.agentId, tweetId, db, authorUsername);
+            if (hasReplied) continue;
 
-          if (!(await canReplyToMentionForAgent(agent.agentId, db))) continue;
+            if (!(await canReplyToMentionForAgent(agent.agentId, db))) continue;
 
-          const promptGenerator = new AgentPromptGenerator(agent);
-          const prompt = promptGenerator.generatePrompt(`Reply to this mention from @${authorUsername}: "${tweet.text}"\nPersonalize your response by addressing @${authorUsername} directly.`);
-          const aiResponse = await openai.chat.completions.create({
-            model: "gpt-3.5-turbo",
-            messages: [{ role: "user", content: prompt }],
-          });
-          let responseText = aiResponse.choices[0]?.message?.content || `Sorry, @${authorUsername}, I couldn't generate a response.`;
-          responseText = responseText.replace(/[\u{1F600}-\u{1F6FF}]/gu, '').replace(/#\w+/g, '');
-          const replyText = `@${authorUsername} ${responseText}`.slice(0, 280);
+            // Identify the user (registered or unregistered)
+            const user = await db.collection("users").findOne({
+              $or: [
+                { "linked_channels.twitter_user_id": tweet.author_id },
+                { twitterHandle: authorUsername },
+              ],
+            });
+            let unified_user_id: string | undefined;
+            let temporary_user_id: string | undefined;
 
-          const targetAgent = await getAgentByTwitterHandle(authorUsername.trim().toLowerCase(), db);
-          const targetAgentId = targetAgent ? targetAgent.agentId : undefined;
+            if (user) {
+              unified_user_id = user.userId;
+              console.log(`User ${unified_user_id} found for Twitter user ${tweet.author_id}`);
+            } else {
+              const tempUser = await findTemporaryUserByChannelId("twitter_user_id", tweet.author_id);
+              if (tempUser) {
+                temporary_user_id = tempUser.temporary_user_id;
+                console.log(`Temporary user ${temporary_user_id} found for Twitter user ${tweet.author_id}`);
+              }
+            }
 
-          await client.v2.tweet({
-            text: replyText,
-            reply: { in_reply_to_tweet_id: tweetId },
-          });
-          console.log(`Agent ${agent.agentId} replied to tweet ${tweetId}: ${replyText}`);
-          await saveTweetReply(agent.agentId, tweetId, db, targetAgentId, authorUsername);
+            // Retrieve recent tasks to check for context
+            const recentTasks = await getRecentTasks(
+              {
+                unified_user_id,
+                temporary_user_id,
+                channel_user_id: tweet.author_id,
+              },
+              agent.settings?.max_memory_context || 5
+            );
+            const hasRecentTasks = recentTasks.length > 0;
+            const context = recentTasks.map(t => `Command: ${t.command}, Result: ${t.result || "Pending"}`).join("\n");
+
+            // Determine if the tweet should be saved as a task
+            const shouldSaveTask = shouldSaveAsTask(tweet.text || "No text provided", hasRecentTasks);
+            const classification = await TaskClassifier.classifyTask(tweet.text, agent, recentTasks);
+          if (classification.task_type !== "chat" || shouldSaveTask) {            
+              task_id = uuidv4();
+              const task: Task = {
+                task_id,
+                channel_id: conversationId,
+                channel_user_id: tweet.author_id,
+                unified_user_id,
+                temporary_user_id,
+                command: tweet.text || "No text provided",
+                status: "in_progress",
+                created_at: new Date(),
+                completed_at: null, // Set to null since the task is not completed yet
+                agent_id: agent.agentId,
+              };
+              await saveTask(task);
+            } else {
+              console.log(`Tweet not saved as task, but will still respond: "${tweet.text}"`);
+            }
+
+            // Generate the prompt with context
+            const promptGenerator = new AgentPromptGenerator(agent);
+            const prompt = promptGenerator.generatePrompt(
+              `Reply to this mention from @${authorUsername}: "${tweet.text || "No text provided"}"\nPersonalize your response by addressing @${authorUsername} directly.\nPrevious interactions:\n${context || "None"}`
+            );
+            const aiResponse = await openai.chat.completions.create({
+              model: "gpt-3.5-turbo",
+              messages: [{ role: "user", content: prompt }],
+            });
+            let responseText = aiResponse.choices[0]?.message?.content || `Sorry, @${authorUsername}, I couldn't generate a response.`;
+            responseText = responseText.replace(/[\u{1F600}-\u{1F6FF}]/gu, '').replace(/#\w+/g, '');
+
+            // Add registration/linking prompt for unregistered users
+            if (!unified_user_id) {
+              responseText += `\nTo save your preferences and use me across channels, reply with 'register' to create an account or 'link' to connect with other channels!`;
+            }
+
+            const replyText = `@${authorUsername} ${responseText}`.slice(0, 280);
+
+            const targetAgent = await getAgentByTwitterHandle(authorUsername.trim().toLowerCase(), db);
+            const targetAgentId = targetAgent ? targetAgent.agentId : undefined;
+
+            await client.v2.tweet({
+              text: replyText,
+              reply: { in_reply_to_tweet_id: tweetId },
+            });
+            console.log(`Agent ${agent.agentId} replied to tweet ${tweetId}: ${replyText}`);
+
+            // Update the task in Memory if it was saved
+            if (task_id) {
+              await updateTask(task_id, { 
+                status: "completed", 
+                result: replyText,
+                completed_at: new Date(), // Set completed_at to current date
+              });
+            }
+
+            await saveTweetReply(agent.agentId, tweetId, db, targetAgentId, authorUsername);
+
+            // Handle registration or linking requests
+            if (!unified_user_id && tweet.text?.toLowerCase().includes("register")) {
+              const linking_code = uuidv4().slice(0, 8);
+              const expires_at = new Date(Date.now() + 60 * 60 * 1000); // 1-hour expiration
+              await saveLinkingCode(tweet.author_id, linking_code, expires_at);
+              await client.v2.tweet({
+                text: `@${authorUsername} Please visit ${FRONTEND_URL}/register and use this code to register: ${linking_code}`,
+                reply: { in_reply_to_tweet_id: tweetId },
+              });
+            } else if (!unified_user_id && tweet.text?.toLowerCase().includes("link")) {
+              const linking_code = uuidv4().slice(0, 8);
+              const expires_at = new Date(Date.now() + 60 * 60 * 1000); // 1-hour expiration
+              await saveLinkingCode(tweet.author_id, linking_code, expires_at);
+              await client.v2.tweet({
+                text: `@${authorUsername} Use this code on another channel to link your accounts: ${linking_code}`,
+                reply: { in_reply_to_tweet_id: tweetId },
+              });
+            } else if (!unified_user_id && tweet.text?.toLowerCase().startsWith("link ")) {
+              const linking_code = tweet.text.split(" ")[1];
+              const linkingData = await findLinkingCode(linking_code);
+              if (linkingData && linkingData.expires_at > new Date()) {
+                let tempUser = await findTemporaryUserByChannelId("twitter_user_id", linkingData.channel_user_id);
+                if (!tempUser) {
+                  tempUser = {
+                    temporary_user_id: uuidv4(),
+                    linked_channels: { twitter_user_id: linkingData.channel_user_id },
+                    created_at: new Date(),
+                    expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+                  };
+                  await saveTemporaryUser(tempUser);
+                }
+                tempUser.linked_channels.twitter_user_id = tweet.author_id;
+                await updateTemporaryUser(tempUser.temporary_user_id, tempUser);
+                await deleteLinkingCode(linking_code);
+                await client.v2.tweet({
+                  text: `@${authorUsername} Accounts linked! I’ll recognize you across channels now.`,
+                  reply: { in_reply_to_tweet_id: tweetId },
+                });
+                await db.collection("tasks").updateMany(
+                  { channel_user_id: { $in: [linkingData.channel_user_id, tweet.author_id] } },
+                  { $set: { temporary_user_id: tempUser.temporary_user_id } }
+                );
+              } else {
+                await client.v2.tweet({
+                  text: `@${authorUsername} Invalid or expired linking code. Reply with 'link' to get a new one.`,
+                  reply: { in_reply_to_tweet_id: tweetId },
+                });
+              }
+            }
+          } catch (error) {
+            console.error(`Error processing tweet for agent ${agent.agentId}, tweet ID: ${tweet.id}:`, error);
+            if (task_id) {
+              await updateTask(task_id, { 
+                status: "failed", 
+                result: "Error processing request",
+                completed_at: new Date(), // Set completed_at even on failure
+              });
+            }
+          }
         }
       }
       scheduleNextPoll();
