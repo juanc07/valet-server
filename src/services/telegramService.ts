@@ -7,7 +7,7 @@ import OpenAI from 'openai';
 import { v4 as uuidv4 } from 'uuid';
 import { TelegramMessage } from '../types/telegram';
 import { FRONTEND_URL } from '../config';
-import { findTemporaryUserByChannelId, saveTemporaryUser, saveLinkingCode, findLinkingCode, deleteLinkingCode, updateTemporaryUser } from './dbService';
+import { findTemporaryUserByChannelId} from './dbService';
 import { saveTask, getRecentTasks, updateTask } from '../controllers/taskController';
 import { shouldSaveAsTask } from '../utils/criteriaUtils'; // Import the new utility
 import { TaskClassifier } from "../utils/TaskClassifier";
