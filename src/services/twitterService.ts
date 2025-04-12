@@ -1,3 +1,4 @@
+// src/services/twitterService.ts
 import { TwitterApi, TwitterApiTokens, TweetV2 } from "twitter-api-v2";
 import OpenAI from "openai";
 import { v4 as uuidv4 } from "uuid";
@@ -31,9 +32,8 @@ import {
   FRONTEND_URL,
 } from "../config";
 import { AgentPromptGenerator } from "../utils/agentPromptGenerator";
-import { findTemporaryUserByChannelId } from "../services/dbService";
 import { saveTask, getRecentTasks, updateTask } from "../controllers/taskController";
-import { shouldSaveAsTask } from "../utils/criteriaUtils"; // Import the new utility
+import { shouldSaveAsTask } from "../utils/criteriaUtils";
 import { TaskClassifier } from "../utils/TaskClassifier";
 
 // Helper to fetch Twitter user ID from handle
@@ -136,12 +136,12 @@ async function setupTwitterStreamListenerPaid(agent: Agent, db: any): Promise<bo
 
   const processedTweets = new Set<string>();
   let replyCount = 3; // Start with 3 replies allowed
-  const STREAM_CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes, adjust as needed
+  const STREAM_CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
-  // Reset reply count every 5 minutes to mimic polling interval
+  // Reset reply count every 5 minutes
   setInterval(() => {
     replyCount = 3;
-    processedTweets.clear(); // Allow reprocessing of tweets each interval
+    processedTweets.clear();
     console.log(`Reset reply count to 3 and cleared processed tweets for agent ${agent.agentId} at ${new Date().toISOString()}`);
   }, STREAM_CHECK_INTERVAL_MS);
 
@@ -169,10 +169,10 @@ async function setupTwitterStreamListenerPaid(agent: Agent, db: any): Promise<bo
       console.log(`Twitter stream started for agent ${agent.agentId}`);
 
       stream.on("data", async (tweet: TweetV2) => {
-        let task_id: string | undefined; // Define task_id for error handling
+        let task_id: string | undefined;
         try {
           const tweetId = tweet.id;
-          const conversationId = tweet.conversation_id || tweetId; // Fallback to tweetId if conversation_id is missing
+          const conversationId = tweet.conversation_id || tweetId;
 
           if (processedTweets.has(tweetId)) {
             console.log(`Tweet ${tweetId} already processed for agent ${agent.agentId}, skipping`);
@@ -204,13 +204,12 @@ async function setupTwitterStreamListenerPaid(agent: Agent, db: any): Promise<bo
             return;
           }
 
-          // Check reply count for this interval
           if (replyCount <= 0) {
-            console.log(`Skipping tweet ${tweetId} for agent ${agent.agentId}: Max 3 replies reached for this interval`);
-            return; // Don’t mark as replied
+            console.log(`Tweet ${tweetId} for agent ${agent.agentId}: Max 3 replies reached for this interval`);
+            return;
           }
 
-          // Identify the user (registered or unregistered)
+          // Identify user (registered only)
           const user = await db.collection("users").findOne({
             $or: [
               { "linked_channels.twitter_user_id": tweet.author_id },
@@ -218,39 +217,30 @@ async function setupTwitterStreamListenerPaid(agent: Agent, db: any): Promise<bo
             ],
           });
           let unified_user_id: string | undefined;
-          let temporary_user_id: string | undefined;
 
           if (user) {
             unified_user_id = user.userId;
             console.log(`User ${unified_user_id} found for Twitter user ${tweet.author_id}`);
-          } else {
-            const tempUser = await findTemporaryUserByChannelId("twitter_user_id", tweet.author_id);
-            if (tempUser) {
-              temporary_user_id = tempUser.temporary_user_id;
-              console.log(`Temporary user ${temporary_user_id} found for Twitter user ${tweet.author_id}`);
-            }
           }
 
           // Handle unregistered users
           if (!unified_user_id) {
-            const replyText = `@${authorUsername} Please visit valetapp.xyz to connect your wallet and register!`;
+            const replyText = `@${authorUsername} Please visit ${FRONTEND_URL || 'valetapp.xyz'} to connect your wallet and register!`;
             await postClient.v2.tweet({
               text: replyText,
               reply: { in_reply_to_tweet_id: tweetId },
             });
             console.log(`Agent ${agent.agentId} replied to unregistered user tweet ${tweetId}: ${replyText}`);
-
             await saveTweetReply(agent.agentId, tweetId, db, undefined, authorUsername);
             replyCount--;
             console.log(`Reply count for agent ${agent.agentId} decremented to ${replyCount}`);
-            return; // Skip further processing for unregistered users
+            return;
           }
 
-          // Retrieve recent tasks to check for context (for registered users)
+          // Retrieve recent tasks
           const recentTasks = await getRecentTasks(
             {
               unified_user_id,
-              temporary_user_id,
               channel_user_id: tweet.author_id,
             },
             agent.settings?.max_memory_context || 5
@@ -258,29 +248,50 @@ async function setupTwitterStreamListenerPaid(agent: Agent, db: any): Promise<bo
           const hasRecentTasks = recentTasks.length > 0;
           const context = recentTasks.map(t => `Command: ${t.command}, Result: ${t.result || "Pending"}`).join("\n");
 
-          // Determine if the tweet should be saved as a task
+          // Classify and handle task
+          const classification = await TaskClassifier.classifyTask(tweet.text || "No text provided", agent, recentTasks);
           const shouldSaveTask = shouldSaveAsTask(tweet.text || "No text provided", hasRecentTasks);
-          const classification = await TaskClassifier.classifyTask(tweet.text, agent, recentTasks);
+
           if (classification.task_type !== "chat" || shouldSaveTask) {
             task_id = uuidv4();
             const task: Task = {
               task_id,
-              channel_id: conversationId,
+              channel_id: `twitter_${tweetId}`,
               channel_user_id: tweet.author_id,
               unified_user_id,
-              temporary_user_id,
               command: tweet.text || "No text provided",
-              status: "in_progress",
+              status: "pending",
               created_at: new Date(),
-              completed_at: null, // Set to null since the task is not completed yet
+              completed_at: null,
               agent_id: agent.agentId,
+              task_type: classification.task_type,
+              external_service:
+                classification.task_type !== "chat"
+                  ? {
+                      service_name: classification.service_name || "third_party_api",
+                      request_data: classification.request_data,
+                      status: "pending",
+                      api_key: classification.api_key,
+                    }
+                  : undefined,
+              max_retries: classification.task_type !== "chat" ? 3 : undefined,
             };
             await saveTask(task);
-          } else {
-            console.log(`Tweet not saved as task, but will still respond: "${tweet.text}"`);
+            console.log(`Saved task ${task_id} for tweet ${tweetId}: ${tweet.text}`);
+
+            const replyText = `@${authorUsername} Your request has been queued for processing (Task ID: ${task_id}).`;
+            await postClient.v2.tweet({
+              text: replyText,
+              reply: { in_reply_to_tweet_id: tweetId },
+            });
+            console.log(`Agent ${agent.agentId} replied to tweet ${tweetId}: ${replyText}`);
+            await saveTweetReply(agent.agentId, tweetId, db, undefined, authorUsername);
+            replyCount--;
+            console.log(`Reply count for agent ${agent.agentId} decremented to ${replyCount}`);
+            return;
           }
 
-          // Generate the prompt with context
+          // Handle chat messages
           const promptGenerator = new AgentPromptGenerator(agent);
           const prompt = promptGenerator.generatePrompt(
             `Reply to this mention from @${authorUsername}: "${tweet.text || "No text provided"}"\nPersonalize your response by addressing @${authorUsername} directly.\nPrevious interactions:\n${context || "None"}`
@@ -307,25 +318,16 @@ async function setupTwitterStreamListenerPaid(agent: Agent, db: any): Promise<bo
           });
           console.log(`Agent ${agent.agentId} replied to tweet ${tweetId}: ${replyText}`);
 
-          // Update the task in Memory if it was saved
-          if (task_id) {
-            await updateTask(task_id, { 
-              status: "completed", 
-              result: replyText,
-              completed_at: new Date(), // Set completed_at to current date
-            });
-          }
-
           await saveTweetReply(agent.agentId, tweetId, db, targetAgentId, authorUsername);
           replyCount--;
           console.log(`Reply count for agent ${agent.agentId} decremented to ${replyCount}`);
         } catch (error) {
           console.error(`Error processing tweet for agent ${agent.agentId}, tweet ID: ${tweet.id || 'unknown'}:`, error);
           if (task_id) {
-            await updateTask(task_id, { 
-              status: "failed", 
+            await updateTask(task_id, {
+              status: "failed",
               result: "Error processing request",
-              completed_at: new Date(), // Set completed_at even on failure
+              completed_at: new Date(),
             });
           }
         }
@@ -400,7 +402,7 @@ async function setupTwitterMentionsListenerPaid(agent: Agent, db: any) {
       if (tweets.length > 0) {
         sinceId = tweets[0].id;
         for (const tweet of tweets) {
-          let task_id: string | undefined; // Define task_id for error handling
+          let task_id: string | undefined;
           try {
             if (!tweet.author_id) {
               console.error(`No author_id in tweet for agent ${agent.agentId}:`, tweet);
@@ -408,7 +410,7 @@ async function setupTwitterMentionsListenerPaid(agent: Agent, db: any) {
             }
 
             const tweetId = tweet.id;
-            const conversationId = tweet.conversation_id || tweetId; // Fallback to tweetId if conversation_id is missing
+            const conversationId = tweet.conversation_id || tweetId;
             const authorUsername = await getUsernameFromId(tweet.author_id, client, db);
             if (!authorUsername || authorUsername === agent.twitterHandle) {
               console.log(`Skipping self-mention or invalid author for tweet ${tweetId}`);
@@ -426,13 +428,12 @@ async function setupTwitterMentionsListenerPaid(agent: Agent, db: any) {
               continue;
             }
 
-            // Check reply count for this polling cycle
             if (replyCount <= 0) {
-              console.log(`Skipping tweet ${tweetId} for agent ${agent.agentId}: Max 3 replies reached for this polling cycle`);
-              continue; // Don’t mark as replied
+              console.log(`Tweet ${tweetId} for agent ${agent.agentId}: Max 3 replies reached for this polling cycle`);
+              continue;
             }
 
-            // Identify the user (registered or unregistered)
+            // Identify user (registered only)
             const user = await db.collection("users").findOne({
               $or: [
                 { "linked_channels.twitter_user_id": tweet.author_id },
@@ -440,39 +441,30 @@ async function setupTwitterMentionsListenerPaid(agent: Agent, db: any) {
               ],
             });
             let unified_user_id: string | undefined;
-            let temporary_user_id: string | undefined;
 
             if (user) {
               unified_user_id = user.userId;
               console.log(`User ${unified_user_id} found for Twitter user ${tweet.author_id}`);
-            } else {
-              const tempUser = await findTemporaryUserByChannelId("twitter_user_id", tweet.author_id);
-              if (tempUser) {
-                temporary_user_id = tempUser.temporary_user_id;
-                console.log(`Temporary user ${temporary_user_id} found for Twitter user ${tweet.author_id}`);
-              }
             }
 
             // Handle unregistered users
             if (!unified_user_id) {
-              const replyText = `@${authorUsername} Please visit valetapp.xyz to connect your wallet and register!`;
+              const replyText = `@${authorUsername} Please visit ${FRONTEND_URL || 'valetapp.xyz'} to connect your wallet and register!`;
               await client.v2.tweet({
                 text: replyText,
                 reply: { in_reply_to_tweet_id: tweetId },
               });
               console.log(`Agent ${agent.agentId} replied to unregistered user tweet ${tweetId}: ${replyText}`);
-
               await saveTweetReply(agent.agentId, tweetId, db, undefined, authorUsername);
               replyCount--;
               console.log(`Reply count for agent ${agent.agentId} decremented to ${replyCount}`);
-              continue; // Skip further processing for unregistered users
+              continue;
             }
 
-            // Retrieve recent tasks to check for context (for registered users)
+            // Retrieve recent tasks
             const recentTasks = await getRecentTasks(
               {
                 unified_user_id,
-                temporary_user_id,
                 channel_user_id: tweet.author_id,
               },
               agent.settings?.max_memory_context || 5
@@ -480,29 +472,50 @@ async function setupTwitterMentionsListenerPaid(agent: Agent, db: any) {
             const hasRecentTasks = recentTasks.length > 0;
             const context = recentTasks.map(t => `Command: ${t.command}, Result: ${t.result || "Pending"}`).join("\n");
 
-            // Determine if the tweet should be saved as a task
+            // Classify and handle task
+            const classification = await TaskClassifier.classifyTask(tweet.text || "No text provided", agent, recentTasks);
             const shouldSaveTask = shouldSaveAsTask(tweet.text || "No text provided", hasRecentTasks);
-            const classification = await TaskClassifier.classifyTask(tweet.text, agent, recentTasks);
+
             if (classification.task_type !== "chat" || shouldSaveTask) {
               task_id = uuidv4();
               const task: Task = {
                 task_id,
-                channel_id: conversationId,
+                channel_id: `twitter_${tweetId}`,
                 channel_user_id: tweet.author_id,
                 unified_user_id,
-                temporary_user_id,
                 command: tweet.text || "No text provided",
-                status: "in_progress",
+                status: "pending",
                 created_at: new Date(),
-                completed_at: null, // Set to null since the task is not completed yet
+                completed_at: null,
                 agent_id: agent.agentId,
+                task_type: classification.task_type,
+                external_service:
+                  classification.task_type !== "chat"
+                    ? {
+                        service_name: classification.service_name || "third_party_api",
+                        request_data: classification.request_data,
+                        status: "pending",
+                        api_key: classification.api_key,
+                      }
+                    : undefined,
+                max_retries: classification.task_type !== "chat" ? 3 : undefined,
               };
               await saveTask(task);
-            } else {
-              console.log(`Tweet not saved as task, but will still respond: "${tweet.text}"`);
+              console.log(`Saved task ${task_id} for tweet ${tweetId}: ${tweet.text}`);
+
+              const replyText = `@${authorUsername} Your request has been queued for processing (Task ID: ${task_id}).`;
+              await client.v2.tweet({
+                text: replyText,
+                reply: { in_reply_to_tweet_id: tweetId },
+              });
+              console.log(`Agent ${agent.agentId} replied to tweet ${tweetId}: ${replyText}`);
+              await saveTweetReply(agent.agentId, tweetId, db, undefined, authorUsername);
+              replyCount--;
+              console.log(`Reply count for agent ${agent.agentId} decremented to ${replyCount}`);
+              continue;
             }
 
-            // Generate the prompt with context
+            // Handle chat messages
             const promptGenerator = new AgentPromptGenerator(agent);
             const prompt = promptGenerator.generatePrompt(
               `Reply to this mention from @${authorUsername}: "${tweet.text || "No text provided"}"\nPersonalize your response by addressing @${authorUsername} directly.\nPrevious interactions:\n${context || "None"}`
@@ -525,25 +538,16 @@ async function setupTwitterMentionsListenerPaid(agent: Agent, db: any) {
             });
             console.log(`Agent ${agent.agentId} replied to tweet ${tweetId}: ${replyText}`);
 
-            // Update the task in Memory if it was saved
-            if (task_id) {
-              await updateTask(task_id, { 
-                status: "completed", 
-                result: replyText,
-                completed_at: new Date(), // Set completed_at to current date
-              });
-            }
-
             await saveTweetReply(agent.agentId, tweetId, db, targetAgentId, authorUsername);
             replyCount--;
             console.log(`Reply count for agent ${agent.agentId} decremented to ${replyCount}`);
           } catch (error) {
             console.error(`Error processing tweet for agent ${agent.agentId}, tweet ID: ${tweet.id}:`, error);
             if (task_id) {
-              await updateTask(task_id, { 
-                status: "failed", 
+              await updateTask(task_id, {
+                status: "failed",
                 result: "Error processing request",
-                completed_at: new Date(), // Set completed_at even on failure
+                completed_at: new Date(),
               });
             }
           }
@@ -617,12 +621,12 @@ async function setupTwitterPollListenerPaid(agent: Agent, db: any) {
       if (tweets.length > 0) {
         sinceId = tweets[0].id;
         for (const tweet of tweets) {
-          let task_id: string | undefined; // Define task_id for error handling
+          let task_id: string | undefined;
           try {
             if (!tweet.author_id) continue;
 
             const tweetId = tweet.id;
-            const conversationId = tweet.conversation_id || tweetId; // Fallback to tweetId if conversation_id is missing
+            const conversationId = tweet.conversation_id || tweetId;
             const authorUsername = await getUsernameFromId(tweet.author_id, client, db);
             if (!authorUsername || authorUsername === agent.twitterHandle) continue;
 
@@ -631,7 +635,7 @@ async function setupTwitterPollListenerPaid(agent: Agent, db: any) {
 
             if (!(await canReplyToMentionForAgent(agent.agentId, db))) continue;
 
-            // Identify the user (registered or unregistered)
+            // Identify user (registered only)
             const user = await db.collection("users").findOne({
               $or: [
                 { "linked_channels.twitter_user_id": tweet.author_id },
@@ -639,37 +643,28 @@ async function setupTwitterPollListenerPaid(agent: Agent, db: any) {
               ],
             });
             let unified_user_id: string | undefined;
-            let temporary_user_id: string | undefined;
 
             if (user) {
               unified_user_id = user.userId;
               console.log(`User ${unified_user_id} found for Twitter user ${tweet.author_id}`);
-            } else {
-              const tempUser = await findTemporaryUserByChannelId("twitter_user_id", tweet.author_id);
-              if (tempUser) {
-                temporary_user_id = tempUser.temporary_user_id;
-                console.log(`Temporary user ${temporary_user_id} found for Twitter user ${tweet.author_id}`);
-              }
             }
 
             // Handle unregistered users
             if (!unified_user_id) {
-              const replyText = `@${authorUsername} Please visit valetapp.xyz to connect your wallet and register!`;
+              const replyText = `@${authorUsername} Please visit ${FRONTEND_URL || 'valetapp.xyz'} to connect your wallet and register!`;
               await client.v2.tweet({
                 text: replyText,
                 reply: { in_reply_to_tweet_id: tweetId },
               });
               console.log(`Agent ${agent.agentId} replied to unregistered user tweet ${tweetId}: ${replyText}`);
-
               await saveTweetReply(agent.agentId, tweetId, db, undefined, authorUsername);
-              continue; // Skip further processing for unregistered users
+              continue;
             }
 
-            // Retrieve recent tasks to check for context (for registered users)
+            // Retrieve recent tasks
             const recentTasks = await getRecentTasks(
               {
                 unified_user_id,
-                temporary_user_id,
                 channel_user_id: tweet.author_id,
               },
               agent.settings?.max_memory_context || 5
@@ -677,29 +672,48 @@ async function setupTwitterPollListenerPaid(agent: Agent, db: any) {
             const hasRecentTasks = recentTasks.length > 0;
             const context = recentTasks.map(t => `Command: ${t.command}, Result: ${t.result || "Pending"}`).join("\n");
 
-            // Determine if the tweet should be saved as a task
+            // Classify and handle task
+            const classification = await TaskClassifier.classifyTask(tweet.text || "No text provided", agent, recentTasks);
             const shouldSaveTask = shouldSaveAsTask(tweet.text || "No text provided", hasRecentTasks);
-            const classification = await TaskClassifier.classifyTask(tweet.text, agent, recentTasks);
+
             if (classification.task_type !== "chat" || shouldSaveTask) {
               task_id = uuidv4();
               const task: Task = {
                 task_id,
-                channel_id: conversationId,
+                channel_id: `twitter_${tweetId}`,
                 channel_user_id: tweet.author_id,
                 unified_user_id,
-                temporary_user_id,
                 command: tweet.text || "No text provided",
-                status: "in_progress",
+                status: "pending",
                 created_at: new Date(),
-                completed_at: null, // Set to null since the task is not completed yet
+                completed_at: null,
                 agent_id: agent.agentId,
+                task_type: classification.task_type,
+                external_service:
+                  classification.task_type !== "chat"
+                    ? {
+                        service_name: classification.service_name || "third_party_api",
+                        request_data: classification.request_data,
+                        status: "pending",
+                        api_key: classification.api_key,
+                      }
+                    : undefined,
+                max_retries: classification.task_type !== "chat" ? 3 : undefined,
               };
               await saveTask(task);
-            } else {
-              console.log(`Tweet not saved as task, but will still respond: "${tweet.text}"`);
+              console.log(`Saved task ${task_id} for tweet ${tweetId}: ${tweet.text}`);
+
+              const replyText = `@${authorUsername} Your request has been queued for processing (Task ID: ${task_id}).`;
+              await client.v2.tweet({
+                text: replyText,
+                reply: { in_reply_to_tweet_id: tweetId },
+              });
+              console.log(`Agent ${agent.agentId} replied to tweet ${tweetId}: ${replyText}`);
+              await saveTweetReply(agent.agentId, tweetId, db, undefined, authorUsername);
+              continue;
             }
 
-            // Generate the prompt with context
+            // Handle chat messages
             const promptGenerator = new AgentPromptGenerator(agent);
             const prompt = promptGenerator.generatePrompt(
               `Reply to this mention from @${authorUsername}: "${tweet.text || "No text provided"}"\nPersonalize your response by addressing @${authorUsername} directly.\nPrevious interactions:\n${context || "None"}`
@@ -722,23 +736,14 @@ async function setupTwitterPollListenerPaid(agent: Agent, db: any) {
             });
             console.log(`Agent ${agent.agentId} replied to tweet ${tweetId}: ${replyText}`);
 
-            // Update the task in Memory if it was saved
-            if (task_id) {
-              await updateTask(task_id, { 
-                status: "completed", 
-                result: replyText,
-                completed_at: new Date(), // Set completed_at to current date
-              });
-            }
-
             await saveTweetReply(agent.agentId, tweetId, db, targetAgentId, authorUsername);
           } catch (error) {
             console.error(`Error processing tweet for agent ${agent.agentId}, tweet ID: ${tweet.id}:`, error);
             if (task_id) {
-              await updateTask(task_id, { 
-                status: "failed", 
+              await updateTask(task_id, {
+                status: "failed",
                 result: "Error processing request",
-                completed_at: new Date(), // Set completed_at even on failure
+                completed_at: new Date(),
               });
             }
           }
@@ -941,7 +946,7 @@ export function startPostingInterval(agent: Agent, db: any) {
 
   const twitterAutoPostingMinInterval = parseInt(TWITTER_AUTO_POSTING_MIN_INTERVAL || "3600", 10);
   let intervalSeconds = 3600;
-  if (agent.postTweetInterval !== undefined) { // Explicit check for undefined
+  if (agent.postTweetInterval !== undefined) {
     intervalSeconds = agent.postTweetInterval < twitterAutoPostingMinInterval
       ? twitterAutoPostingMinInterval
       : agent.postTweetInterval;

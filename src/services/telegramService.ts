@@ -7,9 +7,8 @@ import OpenAI from 'openai';
 import { v4 as uuidv4 } from 'uuid';
 import { TelegramMessage } from '../types/telegram';
 import { FRONTEND_URL } from '../config';
-import { findTemporaryUserByChannelId} from './dbService';
 import { saveTask, getRecentTasks, updateTask } from '../controllers/taskController';
-import { shouldSaveAsTask } from '../utils/criteriaUtils'; // Import the new utility
+import { shouldSaveAsTask } from '../utils/criteriaUtils';
 import { TaskClassifier } from "../utils/TaskClassifier";
 
 const telegramBots = new Map<string, [TelegramBot, string]>();
@@ -17,15 +16,12 @@ const MAX_RESTART_ATTEMPTS = 3;
 const RESTART_DELAY_MS = 5000;
 
 export async function setupTelegramListener(agent: Agent) {
-  // Early return if token is missing or other conditions aren't met
   if (!agent.telegramBotToken || !agent.enableTelegramReplies || !agent.settings?.platforms?.includes('telegram')) {
     console.log(`Skipping Telegram setup for agent ${agent.agentId}: Missing token, replies disabled, or Telegram not in platforms`);
     return;
   }
 
-  // At this point, agent.telegramBotToken is guaranteed to be non-undefined due to the !agent.telegramBotToken check
-  const token: string = agent.telegramBotToken; // Type guard ensures this is string
-
+  const token: string = agent.telegramBotToken;
   stopTelegramListener(agent.agentId);
 
   for (const [existingAgentId, [, existingToken]] of telegramBots) {
@@ -43,31 +39,31 @@ export async function setupTelegramListener(agent: Agent) {
       telegramBots.set(agent.agentId, [bot, token]);
 
       const me = await bot.getMe();
-      const botUsername = me.username ? `@${me.username}` : `@Bot_${agent.agentId}`; // Fallback if username is missing
+      const botUsername = me.username ? `@${me.username}` : `@Bot_${agent.agentId}`;
       console.log(`Telegram bot initialized for agent ${agent.agentId}: ${botUsername}`);
 
       bot.on('message', async (msg: TelegramMessage) => {
         const db = await connectToDatabase();
-        let task_id: string | undefined; // Define task_id for error handling
-        let chatId: string | undefined; // Declare chatId outside the try block
+        let task_id: string | undefined;
+        let chatId: string | undefined;
 
         try {
-          chatId = msg.chat.id.toString(); // Assign chatId here
+          chatId = msg.chat.id.toString();
           const userId = msg.from?.id?.toString();
           if (!userId) {
             console.error(`No user ID found in message for agent ${agent.agentId}:`, msg);
             return;
           }
-          const username = msg.from?.username || `user_${userId}`; // Fallback if username is not available
+          const username = msg.from?.username || `user_${userId}`;
           const text = msg.text || '';
-          console.log(`Message received: chatId=${chatId}, userId=${userId}, username=${username}, text="${text}", expectedGroup=${agent.telegramGroupId}`);
+          console.log(`Message received for agent ${agent.agentId}: chatId=${chatId}, userId=${userId}, username=${username}, text="${text}", expectedGroup=${agent.telegramGroupId}`);
 
           const isMentioned = text.includes(botUsername);
           const isTargetGroup = agent.telegramGroupId && chatId === agent.telegramGroupId;
-          console.log(`isMentioned=${isMentioned}, isTargetGroup=${isTargetGroup}`);
+          console.log(`Processing message: isMentioned=${isMentioned}, isTargetGroup=${isTargetGroup}`);
 
           if (!isMentioned && !isTargetGroup) {
-            console.log(`Skipping reply: Not mentioned and not target group`);
+            console.log(`Skipping reply for agent ${agent.agentId}: Not mentioned and not target group`);
             return;
           }
 
@@ -90,73 +86,98 @@ export async function setupTelegramListener(agent: Agent) {
             return;
           }
 
-          // Identify the user (registered or unregistered)
+          // Identify user (registered only)
           const user = await db.collection("users").findOne({
             $or: [
               { "linked_channels.telegram_user_id": userId },
-              { telegramHandle: username },
+              { "telegramId": username },
             ],
           });
           let unified_user_id: string | undefined;
-          let temporary_user_id: string | undefined;
 
           if (user) {
             unified_user_id = user.userId;
             console.log(`User ${unified_user_id} found for Telegram user ${userId}`);
-          } else {
-            const tempUser = await findTemporaryUserByChannelId("telegram_user_id", userId);
-            if (tempUser) {
-              temporary_user_id = tempUser.temporary_user_id;
-              console.log(`Temporary user ${temporary_user_id} found for Telegram user ${userId}`);
-            }
           }
 
           // Handle unregistered users
           if (!unified_user_id) {
-            const replyText = `Please visit valetapp.xyz to connect your wallet and register!`;
+            const replyText = `Please visit ${FRONTEND_URL || 'valetapp.xyz'} to connect your wallet and register!`;
             await bot.sendMessage(chatId, replyText);
             console.log(`Agent ${agent.agentId} replied to unregistered user message ${msg.message_id}: ${replyText}`);
-
             await saveTelegramReply(agent.agentId, msg.message_id, db);
             await incrementAgentTelegramReplyCount(agent.agentId, db);
-            return; // Skip further processing for unregistered users
+            return;
           }
 
-          // Retrieve recent tasks to check for context (for registered users)
+          // Retrieve recent tasks
           const recentTasks = await getRecentTasks(
             {
               unified_user_id,
-              temporary_user_id,
               channel_user_id: userId,
             },
             agent.settings?.max_memory_context || 5
           );
           const hasRecentTasks = recentTasks.length > 0;
           const context = recentTasks.map(t => `Command: ${t.command}, Result: ${t.result || "Pending"}`).join("\n");
+          console.log(`Recent tasks for user ${unified_user_id}: ${context || "None"}`);
 
-          // Determine if the message should be saved as a task
-          const shouldSaveTask = shouldSaveAsTask(text, hasRecentTasks);
+          // Classify and handle task
           const classification = await TaskClassifier.classifyTask(text, agent, recentTasks);
+          console.log(`Task classification for message "${text}": type=${classification.task_type}, service=${classification.service_name}`);
+          const shouldSaveTask = shouldSaveAsTask(text, hasRecentTasks);
+
           if (classification.task_type !== "chat" || shouldSaveTask) {
+            // Validate image generation tasks
+            if (classification.task_type === "api_call" && classification.service_name === "image_generation") {
+              if (!classification.request_data?.prompt) {
+                console.error(`Invalid image generation task for agent ${agent.agentId}: Missing prompt`);
+                await bot.sendMessage(chatId, "Error: Please provide a valid prompt for image generation.");
+                await saveTelegramReply(agent.agentId, msg.message_id, db);
+                await incrementAgentTelegramReplyCount(agent.agentId, db);
+                return;
+              }
+              // Clean the prompt by removing the bot's username
+              classification.request_data.prompt = classification.request_data.prompt.replace(botUsername, '').trim();
+              console.log(`Cleaned prompt for image generation: "${classification.request_data.prompt}"`);
+            }
+
             task_id = uuidv4();
             const task: Task = {
               task_id,
               channel_id: chatId,
               channel_user_id: userId,
               unified_user_id,
-              temporary_user_id,
               command: text,
-              status: "in_progress",
+              status: "pending",
               created_at: new Date(),
               completed_at: null,
               agent_id: agent.agentId,
+              task_type: classification.task_type,
+              external_service:
+                classification.task_type !== "chat"
+                  ? {
+                      service_name: classification.service_name || "third_party_api",
+                      request_data: classification.request_data,
+                      status: "pending",
+                      api_key: classification.api_key,
+                    }
+                  : undefined,
+              max_retries: classification.task_type !== "chat" ? 3 : undefined,
+              notified: false, // Initialize as not notified
             };
             await saveTask(task);
-          } else {
-            console.log(`Message not saved as task, but will still respond: "${text}"`);
+            console.log(`Saved task ${task_id} for agent ${agent.agentId}, message ${msg.message_id}: command="${text}", type=${classification.task_type}`);
+
+            const replyText = `Your request has been queued for processing (Task ID: ${task_id}).`;
+            await bot.sendMessage(chatId, replyText);
+            console.log(`Agent ${agent.agentId} replied to message ${msg.message_id}: ${replyText}`);
+            await saveTelegramReply(agent.agentId, msg.message_id, db);
+            await incrementAgentTelegramReplyCount(agent.agentId, db);
+            return;
           }
 
-          // Generate the prompt with context
+          // Handle chat messages
           const openai = new OpenAI({ apiKey: agent.openaiApiKey });
           const promptGenerator = new AgentPromptGenerator(agent);
           const prompt = isMentioned
@@ -166,7 +187,7 @@ export async function setupTelegramListener(agent: Agent) {
             : promptGenerator.generatePrompt(
                 `Reply to this group message from @${username}: "${text}"\nPersonalize your response by addressing @${username} directly.\nPrevious interactions:\n${context || "None"}`
               );
-          console.log(`Generated prompt: ${prompt}`);
+          console.log(`Generated prompt for agent ${agent.agentId}: ${prompt}`);
 
           const response = await openai.chat.completions.create({
             model: 'gpt-3.5-turbo',
@@ -176,30 +197,23 @@ export async function setupTelegramListener(agent: Agent) {
           replyText = replyText.replace(/[\u{1F600}-\u{1F6FF}]/gu, '').replace(/#\w+/g, '');
 
           await bot.sendMessage(chatId, replyText);
-          console.log(`Reply sent: ${replyText}`);
-
-          // Update the task in Memory if it was saved
-          if (task_id) {
-            await updateTask(task_id, { 
-              status: "completed", 
-              result: replyText,
-              completed_at: new Date(), // Set completed_at on completion
-            });
-          }
+          console.log(`Reply sent for agent ${agent.agentId}, message ${msg.message_id}: ${replyText}`);
 
           await saveTelegramReply(agent.agentId, msg.message_id, db);
           await incrementAgentTelegramReplyCount(agent.agentId, db);
         } catch (error) {
-          console.error(`Error generating reply for agent ${agent.agentId}:`, error);
-          if (chatId) { // Ensure chatId is defined before sending
+          console.error(`Error generating reply for agent ${agent.agentId}, message ${msg.message_id}:`, error);
+          if (chatId) {
             await bot.sendMessage(chatId, 'Oops, something went wrong while generating a reply.');
           }
           if (task_id) {
-            await updateTask(task_id, { 
-              status: "failed", 
+            await updateTask(task_id, {
+              status: "failed",
               result: "Error processing request",
-              completed_at: new Date(), // Set completed_at on failure
+              completed_at: new Date(),
+              notified: false, // Ensure failed tasks can be notified
             });
+            console.log(`Marked task ${task_id} as failed for agent ${agent.agentId}`);
           }
         }
       });
@@ -229,6 +243,11 @@ export async function setupTelegramListener(agent: Agent) {
   }
 
   await initializeBot();
+}
+
+export function getTelegramBot(agentId: string): TelegramBot | undefined {
+  const botEntry = telegramBots.get(agentId);
+  return botEntry ? botEntry[0] : undefined;
 }
 
 export async function setupTelegramListeners(db: any) {
@@ -267,6 +286,7 @@ export async function getActiveTelegramAgents(db: any): Promise<Agent[]> {
       telegramBotToken: { $exists: true, $ne: '' },
       openaiApiKey: { $exists: true, $ne: '' },
     }).toArray();
+    console.log(`Fetched ${agents.length} active Telegram agents`);
     return agents;
   } catch (error) {
     console.error('Error fetching active Telegram agents:', error);
@@ -277,7 +297,9 @@ export async function getActiveTelegramAgents(db: any): Promise<Agent[]> {
 export async function hasRepliedToTelegramMessage(agentId: string, messageId: number, db: any): Promise<boolean> {
   try {
     const reply = await db.collection('telegramReplies').findOne({ agentId, messageId });
-    return !!reply;
+    const hasReplied = !!reply;
+    console.log(`Checked reply status for agent ${agentId}, message ${messageId}: ${hasReplied}`);
+    return hasReplied;
   } catch (error) {
     console.error(`Error checking Telegram reply for agent ${agentId}:`, error);
     return true; // Fail-safe
@@ -311,11 +333,13 @@ export async function canReplyToTelegramMessage(agentId: string, db: any): Promi
           { $set: { telegramReplyCount: 0, lastTelegramReplyLimitHit: null } },
           { upsert: true }
         );
+        console.log(`Reset Telegram reply limit for agent ${agentId}`);
         return true;
       }
     }
 
     const replyCount = limitDoc?.telegramReplyCount || 0;
+    console.log(`Telegram reply limit check for agent ${agentId}: ${replyCount}/${maxRepliesPerDay}`);
     return replyCount < maxRepliesPerDay;
   } catch (error) {
     console.error(`Error checking Telegram reply limit for agent ${agentId}:`, error);

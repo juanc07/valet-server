@@ -4,9 +4,8 @@ import { connectToDatabase } from "../services/dbService";
 import { AgentPromptGenerator } from "../utils/agentPromptGenerator";
 import { Agent } from "../types/agent";
 import { Task } from "../types/task";
-import { TemporaryUser } from "../types/user";
 import { v4 as uuidv4 } from "uuid";
-import { shouldSaveAsTask } from "../utils/criteriaUtils"; // Modified: Re-imported
+import { shouldSaveAsTask } from "../utils/criteriaUtils";
 import { saveTask, getRecentTasks, updateTask } from "../controllers/taskController";
 import { WithId } from "mongodb";
 import { TaskClassifier } from "../utils/TaskClassifier";
@@ -64,24 +63,8 @@ export const chatWithAgent = async (req: Request<ChatParams, any, ChatRequestBod
 
     if (!unified_user_id) {
       channel_user_id = userId || `web_${uuidv4()}`;
-      let tempUser: WithId<TemporaryUser> | null = (await db
-        .collection("temporaryUsers")
-        .findOne({
-          "linked_channels.web_user_id": channel_user_id,
-        })) as WithId<TemporaryUser> | null;
-
-      if (!tempUser) {
-        const newTempUser: TemporaryUser = {
-          temporary_user_id: uuidv4(),
-          linked_channels: { web_user_id: channel_user_id },
-          created_at: new Date(),
-          expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-        };
-        const insertResult = await db.collection("temporaryUsers").insertOne(newTempUser);
-        tempUser = { ...newTempUser, _id: insertResult.insertedId };
-      }
-      temporary_user_id = tempUser.temporary_user_id;
-      console.log(`Temporary user: ${temporary_user_id} for web_user_id: ${channel_user_id}`);
+      temporary_user_id = uuidv4(); // Generate temporary_user_id without saving
+      console.log(`Temporary user ID generated: ${temporary_user_id} for web_user_id: ${channel_user_id}`);
 
       // Handle unregistered users
       const reply = `Please visit valetapp.xyz to connect your wallet and register!`;
@@ -256,24 +239,8 @@ export const chatWithAgentStream = async (req: Request<ChatParams, any, ChatRequ
 
     if (!unified_user_id) {
       channel_user_id = userId || `web_${uuidv4()}`;
-      let tempUser: WithId<TemporaryUser> | null = (await db
-        .collection("temporaryUsers")
-        .findOne({
-          "linked_channels.web_user_id": channel_user_id,
-        })) as WithId<TemporaryUser> | null;
-
-      if (!tempUser) {
-        const newTempUser: TemporaryUser = {
-          temporary_user_id: uuidv4(),
-          linked_channels: { web_user_id: channel_user_id },
-          created_at: new Date(),
-          expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-        };
-        const insertResult = await db.collection("temporaryUsers").insertOne(newTempUser);
-        tempUser = { ...newTempUser, _id: insertResult.insertedId };
-      }
-      temporary_user_id = tempUser.temporary_user_id;
-      console.log(`Temporary user: ${temporary_user_id} for web_user_id: ${channel_user_id}`);
+      temporary_user_id = uuidv4(); // Generate temporary_user_id without saving
+      console.log(`Temporary user ID generated: ${temporary_user_id} for web_user_id: ${channel_user_id}`);
 
       // Handle unregistered users
       const reply = `Please visit valetapp.xyz to connect your wallet and register!`;

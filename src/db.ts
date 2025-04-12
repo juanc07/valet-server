@@ -1,6 +1,5 @@
 import { MongoClient, Db, WithId } from "mongodb";
 import dotenv from "dotenv";
-import { TemporaryUser } from "./types/user"; // Import the new type
 
 dotenv.config();
 
@@ -15,28 +14,6 @@ export async function connectToDatabase(): Promise<Db> {
   db = client.db("valet-db");
   console.log("Connected to MongoDB");
   return db;
-}
-
-// Save a temporary user profile
-export async function saveTemporaryUser(tempUser: TemporaryUser): Promise<void> {
-  const db = await connectToDatabase();
-  await db.collection("temporaryUsers").insertOne(tempUser);
-}
-
-// Find a temporary user by channel-specific ID
-export async function findTemporaryUserByChannelId(channel: string, channel_user_id: string): Promise<TemporaryUser | null> {
-  const db = await connectToDatabase();
-  const result = await db.collection("temporaryUsers").findOne({ [`linked_channels.${channel}`]: channel_user_id });
-  return result as TemporaryUser | null; // Cast the result to TemporaryUser | null
-}
-
-// Update a temporary user profile
-export async function updateTemporaryUser(temporary_user_id: string, update: Partial<TemporaryUser>): Promise<void> {
-  const db = await connectToDatabase();
-  await db.collection("temporaryUsers").updateOne(
-    { temporary_user_id },
-    { $set: update }
-  );
 }
 
 // Interface for the linking code document

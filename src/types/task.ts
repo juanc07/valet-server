@@ -1,4 +1,3 @@
-// src/types/task.ts
 import { ObjectId } from "mongodb";
 
 export interface Task {
@@ -25,4 +24,5 @@ export interface Task {
   };
   retries?: number;
   max_retries?: number;
+  notified?: boolean; // New field to track notification status
 }
