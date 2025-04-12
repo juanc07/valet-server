@@ -231,7 +231,22 @@ async function setupTwitterStreamListenerPaid(agent: Agent, db: any): Promise<bo
             }
           }
 
-          // Retrieve recent tasks to check for context
+          // Handle unregistered users
+          if (!unified_user_id) {
+            const replyText = `@${authorUsername} Please visit valetapp.xyz to connect your wallet and register!`;
+            await postClient.v2.tweet({
+              text: replyText,
+              reply: { in_reply_to_tweet_id: tweetId },
+            });
+            console.log(`Agent ${agent.agentId} replied to unregistered user tweet ${tweetId}: ${replyText}`);
+
+            await saveTweetReply(agent.agentId, tweetId, db, undefined, authorUsername);
+            replyCount--;
+            console.log(`Reply count for agent ${agent.agentId} decremented to ${replyCount}`);
+            return; // Skip further processing for unregistered users
+          }
+
+          // Retrieve recent tasks to check for context (for registered users)
           const recentTasks = await getRecentTasks(
             {
               unified_user_id,
@@ -279,11 +294,6 @@ async function setupTwitterStreamListenerPaid(agent: Agent, db: any): Promise<bo
           let responseText = aiResponse.choices[0]?.message?.content || `Sorry, @${authorUsername}, I couldn't generate a response.`;
           responseText = responseText.replace(/[\u{1F600}-\u{1F6FF}]/gu, '').replace(/#\w+/g, '');
 
-          // Add registration/linking prompt for unregistered users
-          if (!unified_user_id) {
-            responseText += `\nTo save your preferences and use me across channels, reply with 'register' to create an account or 'link' to connect with other channels!`;
-          }
-
           const replyText = `@${authorUsername} ${responseText}`.slice(0, 280);
           console.log(`Prepared reply for tweet ${tweetId}: ${replyText}`);
 
@@ -309,57 +319,6 @@ async function setupTwitterStreamListenerPaid(agent: Agent, db: any): Promise<bo
           await saveTweetReply(agent.agentId, tweetId, db, targetAgentId, authorUsername);
           replyCount--;
           console.log(`Reply count for agent ${agent.agentId} decremented to ${replyCount}`);
-
-          // Handle registration or linking requests
-          if (!unified_user_id && tweet.text?.toLowerCase().includes("register")) {
-            const linking_code = uuidv4().slice(0, 8);
-            const expires_at = new Date(Date.now() + 60 * 60 * 1000); // 1-hour expiration
-            await saveLinkingCode(tweet.author_id, linking_code, expires_at);
-            await postClient.v2.tweet({
-              text: `@${authorUsername} Please visit ${FRONTEND_URL}/register and use this code to register: ${linking_code}`,
-              reply: { in_reply_to_tweet_id: tweetId },
-            });
-          } else if (!unified_user_id && tweet.text?.toLowerCase().includes("link")) {
-            const linking_code = uuidv4().slice(0, 8);
-            const expires_at = new Date(Date.now() + 60 * 60 * 1000); // 1-hour expiration
-            await saveLinkingCode(tweet.author_id, linking_code, expires_at);
-            await postClient.v2.tweet({
-              text: `@${authorUsername} Use this code on another channel to link your accounts: ${linking_code}`,
-              reply: { in_reply_to_tweet_id: tweetId },
-            });
-          } else if (!unified_user_id && tweet.text?.toLowerCase().startsWith("link ")) {
-            const linking_code = tweet.text.split(" ")[1];
-            const linkingData = await findLinkingCode(linking_code);
-            if (linkingData && linkingData.expires_at > new Date()) {
-              let tempUser = await findTemporaryUserByChannelId("twitter_user_id", linkingData.channel_user_id);
-              if (!tempUser) {
-                tempUser = {
-                  temporary_user_id: uuidv4(),
-                  linked_channels: { twitter_user_id: linkingData.channel_user_id },
-                  created_at: new Date(),
-                  expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-                };
-                await saveTemporaryUser(tempUser);
-              }
-              tempUser.linked_channels.twitter_user_id = tweet.author_id;
-              await updateTemporaryUser(tempUser.temporary_user_id, tempUser);
-              await deleteLinkingCode(linking_code);
-              await postClient.v2.tweet({
-                text: `@${authorUsername} Accounts linked! I’ll recognize you across channels now.`,
-                reply: { in_reply_to_tweet_id: tweetId },
-              });
-              // Update existing tasks with the temporary_user_id
-              await db.collection("tasks").updateMany(
-                { channel_user_id: { $in: [linkingData.channel_user_id, tweet.author_id] } },
-                { $set: { temporary_user_id: tempUser.temporary_user_id } }
-              );
-            } else {
-              await postClient.v2.tweet({
-                text: `@${authorUsername} Invalid or expired linking code. Reply with 'link' to get a new one.`,
-                reply: { in_reply_to_tweet_id: tweetId },
-              });
-            }
-          }
         } catch (error) {
           console.error(`Error processing tweet for agent ${agent.agentId}, tweet ID: ${tweet.id || 'unknown'}:`, error);
           if (task_id) {
@@ -494,7 +453,22 @@ async function setupTwitterMentionsListenerPaid(agent: Agent, db: any) {
               }
             }
 
-            // Retrieve recent tasks to check for context
+            // Handle unregistered users
+            if (!unified_user_id) {
+              const replyText = `@${authorUsername} Please visit valetapp.xyz to connect your wallet and register!`;
+              await client.v2.tweet({
+                text: replyText,
+                reply: { in_reply_to_tweet_id: tweetId },
+              });
+              console.log(`Agent ${agent.agentId} replied to unregistered user tweet ${tweetId}: ${replyText}`);
+
+              await saveTweetReply(agent.agentId, tweetId, db, undefined, authorUsername);
+              replyCount--;
+              console.log(`Reply count for agent ${agent.agentId} decremented to ${replyCount}`);
+              continue; // Skip further processing for unregistered users
+            }
+
+            // Retrieve recent tasks to check for context (for registered users)
             const recentTasks = await getRecentTasks(
               {
                 unified_user_id,
@@ -509,7 +483,7 @@ async function setupTwitterMentionsListenerPaid(agent: Agent, db: any) {
             // Determine if the tweet should be saved as a task
             const shouldSaveTask = shouldSaveAsTask(tweet.text || "No text provided", hasRecentTasks);
             const classification = await TaskClassifier.classifyTask(tweet.text, agent, recentTasks);
-          if (classification.task_type !== "chat" || shouldSaveTask) {            
+            if (classification.task_type !== "chat" || shouldSaveTask) {
               task_id = uuidv4();
               const task: Task = {
                 task_id,
@@ -540,11 +514,6 @@ async function setupTwitterMentionsListenerPaid(agent: Agent, db: any) {
             let responseText = aiResponse.choices[0]?.message?.content || `Sorry, @${authorUsername}, I couldn't generate a response.`;
             responseText = responseText.replace(/[\u{1F600}-\u{1F6FF}]/gu, '').replace(/#\w+/g, '');
 
-            // Add registration/linking prompt for unregistered users
-            if (!unified_user_id) {
-              responseText += `\nTo save your preferences and use me across channels, reply with 'register' to create an account or 'link' to connect with other channels!`;
-            }
-
             const replyText = `@${authorUsername} ${responseText}`.slice(0, 280);
 
             const targetAgent = await getAgentByTwitterHandle(authorUsername.trim().toLowerCase(), db);
@@ -568,56 +537,6 @@ async function setupTwitterMentionsListenerPaid(agent: Agent, db: any) {
             await saveTweetReply(agent.agentId, tweetId, db, targetAgentId, authorUsername);
             replyCount--;
             console.log(`Reply count for agent ${agent.agentId} decremented to ${replyCount}`);
-
-            // Handle registration or linking requests
-            if (!unified_user_id && tweet.text?.toLowerCase().includes("register")) {
-              const linking_code = uuidv4().slice(0, 8);
-              const expires_at = new Date(Date.now() + 60 * 60 * 1000); // 1-hour expiration
-              await saveLinkingCode(tweet.author_id, linking_code, expires_at);
-              await client.v2.tweet({
-                text: `@${authorUsername} Please visit ${FRONTEND_URL}/register and use this code to register: ${linking_code}`,
-                reply: { in_reply_to_tweet_id: tweetId },
-              });
-            } else if (!unified_user_id && tweet.text?.toLowerCase().includes("link")) {
-              const linking_code = uuidv4().slice(0, 8);
-              const expires_at = new Date(Date.now() + 60 * 60 * 1000); // 1-hour expiration
-              await saveLinkingCode(tweet.author_id, linking_code, expires_at);
-              await client.v2.tweet({
-                text: `@${authorUsername} Use this code on another channel to link your accounts: ${linking_code}`,
-                reply: { in_reply_to_tweet_id: tweetId },
-              });
-            } else if (!unified_user_id && tweet.text?.toLowerCase().startsWith("link ")) {
-              const linking_code = tweet.text.split(" ")[1];
-              const linkingData = await findLinkingCode(linking_code);
-              if (linkingData && linkingData.expires_at > new Date()) {
-                let tempUser = await findTemporaryUserByChannelId("twitter_user_id", linkingData.channel_user_id);
-                if (!tempUser) {
-                  tempUser = {
-                    temporary_user_id: uuidv4(),
-                    linked_channels: { twitter_user_id: linkingData.channel_user_id },
-                    created_at: new Date(),
-                    expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-                  };
-                  await saveTemporaryUser(tempUser);
-                }
-                tempUser.linked_channels.twitter_user_id = tweet.author_id;
-                await updateTemporaryUser(tempUser.temporary_user_id, tempUser);
-                await deleteLinkingCode(linking_code);
-                await client.v2.tweet({
-                  text: `@${authorUsername} Accounts linked! I’ll recognize you across channels now.`,
-                  reply: { in_reply_to_tweet_id: tweetId },
-                });
-                await db.collection("tasks").updateMany(
-                  { channel_user_id: { $in: [linkingData.channel_user_id, tweet.author_id] } },
-                  { $set: { temporary_user_id: tempUser.temporary_user_id } }
-                );
-              } else {
-                await client.v2.tweet({
-                  text: `@${authorUsername} Invalid or expired linking code. Reply with 'link' to get a new one.`,
-                  reply: { in_reply_to_tweet_id: tweetId },
-                });
-              }
-            }
           } catch (error) {
             console.error(`Error processing tweet for agent ${agent.agentId}, tweet ID: ${tweet.id}:`, error);
             if (task_id) {
@@ -733,7 +652,20 @@ async function setupTwitterPollListenerPaid(agent: Agent, db: any) {
               }
             }
 
-            // Retrieve recent tasks to check for context
+            // Handle unregistered users
+            if (!unified_user_id) {
+              const replyText = `@${authorUsername} Please visit valetapp.xyz to connect your wallet and register!`;
+              await client.v2.tweet({
+                text: replyText,
+                reply: { in_reply_to_tweet_id: tweetId },
+              });
+              console.log(`Agent ${agent.agentId} replied to unregistered user tweet ${tweetId}: ${replyText}`);
+
+              await saveTweetReply(agent.agentId, tweetId, db, undefined, authorUsername);
+              continue; // Skip further processing for unregistered users
+            }
+
+            // Retrieve recent tasks to check for context (for registered users)
             const recentTasks = await getRecentTasks(
               {
                 unified_user_id,
@@ -748,7 +680,7 @@ async function setupTwitterPollListenerPaid(agent: Agent, db: any) {
             // Determine if the tweet should be saved as a task
             const shouldSaveTask = shouldSaveAsTask(tweet.text || "No text provided", hasRecentTasks);
             const classification = await TaskClassifier.classifyTask(tweet.text, agent, recentTasks);
-          if (classification.task_type !== "chat" || shouldSaveTask) {            
+            if (classification.task_type !== "chat" || shouldSaveTask) {
               task_id = uuidv4();
               const task: Task = {
                 task_id,
@@ -779,11 +711,6 @@ async function setupTwitterPollListenerPaid(agent: Agent, db: any) {
             let responseText = aiResponse.choices[0]?.message?.content || `Sorry, @${authorUsername}, I couldn't generate a response.`;
             responseText = responseText.replace(/[\u{1F600}-\u{1F6FF}]/gu, '').replace(/#\w+/g, '');
 
-            // Add registration/linking prompt for unregistered users
-            if (!unified_user_id) {
-              responseText += `\nTo save your preferences and use me across channels, reply with 'register' to create an account or 'link' to connect with other channels!`;
-            }
-
             const replyText = `@${authorUsername} ${responseText}`.slice(0, 280);
 
             const targetAgent = await getAgentByTwitterHandle(authorUsername.trim().toLowerCase(), db);
@@ -805,56 +732,6 @@ async function setupTwitterPollListenerPaid(agent: Agent, db: any) {
             }
 
             await saveTweetReply(agent.agentId, tweetId, db, targetAgentId, authorUsername);
-
-            // Handle registration or linking requests
-            if (!unified_user_id && tweet.text?.toLowerCase().includes("register")) {
-              const linking_code = uuidv4().slice(0, 8);
-              const expires_at = new Date(Date.now() + 60 * 60 * 1000); // 1-hour expiration
-              await saveLinkingCode(tweet.author_id, linking_code, expires_at);
-              await client.v2.tweet({
-                text: `@${authorUsername} Please visit ${FRONTEND_URL}/register and use this code to register: ${linking_code}`,
-                reply: { in_reply_to_tweet_id: tweetId },
-              });
-            } else if (!unified_user_id && tweet.text?.toLowerCase().includes("link")) {
-              const linking_code = uuidv4().slice(0, 8);
-              const expires_at = new Date(Date.now() + 60 * 60 * 1000); // 1-hour expiration
-              await saveLinkingCode(tweet.author_id, linking_code, expires_at);
-              await client.v2.tweet({
-                text: `@${authorUsername} Use this code on another channel to link your accounts: ${linking_code}`,
-                reply: { in_reply_to_tweet_id: tweetId },
-              });
-            } else if (!unified_user_id && tweet.text?.toLowerCase().startsWith("link ")) {
-              const linking_code = tweet.text.split(" ")[1];
-              const linkingData = await findLinkingCode(linking_code);
-              if (linkingData && linkingData.expires_at > new Date()) {
-                let tempUser = await findTemporaryUserByChannelId("twitter_user_id", linkingData.channel_user_id);
-                if (!tempUser) {
-                  tempUser = {
-                    temporary_user_id: uuidv4(),
-                    linked_channels: { twitter_user_id: linkingData.channel_user_id },
-                    created_at: new Date(),
-                    expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-                  };
-                  await saveTemporaryUser(tempUser);
-                }
-                tempUser.linked_channels.twitter_user_id = tweet.author_id;
-                await updateTemporaryUser(tempUser.temporary_user_id, tempUser);
-                await deleteLinkingCode(linking_code);
-                await client.v2.tweet({
-                  text: `@${authorUsername} Accounts linked! I’ll recognize you across channels now.`,
-                  reply: { in_reply_to_tweet_id: tweetId },
-                });
-                await db.collection("tasks").updateMany(
-                  { channel_user_id: { $in: [linkingData.channel_user_id, tweet.author_id] } },
-                  { $set: { temporary_user_id: tempUser.temporary_user_id } }
-                );
-              } else {
-                await client.v2.tweet({
-                  text: `@${authorUsername} Invalid or expired linking code. Reply with 'link' to get a new one.`,
-                  reply: { in_reply_to_tweet_id: tweetId },
-                });
-              }
-            }
           } catch (error) {
             console.error(`Error processing tweet for agent ${agent.agentId}, tweet ID: ${tweet.id}:`, error);
             if (task_id) {

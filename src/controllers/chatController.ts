@@ -1,4 +1,3 @@
-// src/controllers/chatController.ts
 import { Request, Response } from "express";
 import OpenAI from "openai";
 import { connectToDatabase } from "../services/dbService";
@@ -83,6 +82,11 @@ export const chatWithAgent = async (req: Request<ChatParams, any, ChatRequestBod
       }
       temporary_user_id = tempUser.temporary_user_id;
       console.log(`Temporary user: ${temporary_user_id} for web_user_id: ${channel_user_id}`);
+
+      // Handle unregistered users
+      const reply = `Please visit valetapp.xyz to connect your wallet and register!`;
+      res.status(200).json({ agentId, reply, task_id: undefined, isTask: false });
+      return; // Skip further processing for unregistered users
     }
 
     // Retrieve recent tasks for context
@@ -191,11 +195,6 @@ export const chatWithAgent = async (req: Request<ChatParams, any, ChatRequestBod
       }
     }
 
-    // Add registration prompt for unregistered users
-    if (!unified_user_id) {
-      reply += `\nTo save your preferences and use me across channels, please register at ${process.env.FRONTEND_URL}/register!`;
-    }
-
     res.status(200).json({ agentId, reply, task_id, isTask });
   } catch (error) {
     console.error(`Chat error for agent ${agentId}:`, error);
@@ -275,6 +274,13 @@ export const chatWithAgentStream = async (req: Request<ChatParams, any, ChatRequ
       }
       temporary_user_id = tempUser.temporary_user_id;
       console.log(`Temporary user: ${temporary_user_id} for web_user_id: ${channel_user_id}`);
+
+      // Handle unregistered users
+      const reply = `Please visit valetapp.xyz to connect your wallet and register!`;
+      res.write(`data: ${JSON.stringify({ agentId, content: reply, task_id: undefined, isTask: false })}\n\n`);
+      res.write("data: [DONE]\n\n");
+      res.end();
+      return; // Skip further processing for unregistered users
     }
 
     const recentTasks = await getRecentTasks(
@@ -309,12 +315,6 @@ export const chatWithAgentStream = async (req: Request<ChatParams, any, ChatRequ
       if (lowerMessage.includes("name") || lowerMessage.includes("who are you") || lowerMessage.includes("who're you")) {
         const reply = agent.name ? `I'm ${agent.name}! Nice to chat with you.` : "I'm your friendly assistant! Nice to chat with you.";
         res.write(`data: ${JSON.stringify({ agentId, content: reply })}\n\n`);
-
-        if (!unified_user_id) {
-          const registrationPrompt = `\nTo save your preferences and use me across channels, please register at ${process.env.FRONTEND_URL}/register!`;
-          res.write(`data: ${JSON.stringify({ agentId, content: registrationPrompt })}\n\n`);
-        }
-
         res.write("data: [DONE]\n\n");
         res.end();
       } else {
@@ -339,12 +339,6 @@ export const chatWithAgentStream = async (req: Request<ChatParams, any, ChatRequ
             console.log(`Chunk for agent ${agentId}:`, content);
             res.write(`data: ${JSON.stringify({ agentId, content })}\n\n`);
           }
-        }
-
-        if (!unified_user_id) {
-          const registrationPrompt = `\nTo save your preferences and use me across channels, please register at ${process.env.FRONTEND_URL}/register!`;
-          fullReply += registrationPrompt;
-          res.write(`data: ${JSON.stringify({ agentId, content: registrationPrompt })}\n\n`);
         }
 
         console.log(`Stream ended for agent ${agentId} at:`, new Date().toISOString());
@@ -392,11 +386,6 @@ export const chatWithAgentStream = async (req: Request<ChatParams, any, ChatRequ
         const queuedMessage = `Your request has been queued for processing (Task ID: ${task_id}). You'll be notified once it's complete.`;
         res.write(`data: ${JSON.stringify({ agentId, content: queuedMessage, task_id, isTask: true })}\n\n`);
 
-        if (!unified_user_id) {
-          const registrationPrompt = `\nTo save your preferences and use me across channels, please register at ${process.env.FRONTEND_URL}/register!`;
-          res.write(`data: ${JSON.stringify({ agentId, content: registrationPrompt })}\n\n`);
-        }
-
         console.log(`Stream ended for agent ${agentId} at:`, new Date().toISOString());
         res.write("data: [DONE]\n\n");
         res.end();
@@ -423,12 +412,6 @@ export const chatWithAgentStream = async (req: Request<ChatParams, any, ChatRequ
             console.log(`Chunk for agent ${agentId}:`, content);
             res.write(`data: ${JSON.stringify({ agentId, content })}\n\n`);
           }
-        }
-
-        if (!unified_user_id) {
-          const registrationPrompt = `\nTo save your preferences and use me across channels, please register at ${process.env.FRONTEND_URL}/register!`;
-          fullReply += registrationPrompt;
-          res.write(`data: ${JSON.stringify({ agentId, content: registrationPrompt })}\n\n`);
         }
 
         console.log(`Stream ended for agent ${agentId} at:`, new Date().toISOString());

@@ -111,7 +111,18 @@ export async function setupTelegramListener(agent: Agent) {
             }
           }
 
-          // Retrieve recent tasks to check for context
+          // Handle unregistered users
+          if (!unified_user_id) {
+            const replyText = `Please visit valetapp.xyz to connect your wallet and register!`;
+            await bot.sendMessage(chatId, replyText);
+            console.log(`Agent ${agent.agentId} replied to unregistered user message ${msg.message_id}: ${replyText}`);
+
+            await saveTelegramReply(agent.agentId, msg.message_id, db);
+            await incrementAgentTelegramReplyCount(agent.agentId, db);
+            return; // Skip further processing for unregistered users
+          }
+
+          // Retrieve recent tasks to check for context (for registered users)
           const recentTasks = await getRecentTasks(
             {
               unified_user_id,
@@ -164,11 +175,6 @@ export async function setupTelegramListener(agent: Agent) {
           let replyText = response.choices[0]?.message?.content || `Sorry, @${username}, I couldn’t generate a response.`;
           replyText = replyText.replace(/[\u{1F600}-\u{1F6FF}]/gu, '').replace(/#\w+/g, '');
 
-          // Add registration/linking prompt for unregistered users
-          if (!unified_user_id) {
-            replyText += `\nTo save your preferences and use me across channels, send 'register' to create an account or 'link' to connect with other channels!`;
-          }
-
           await bot.sendMessage(chatId, replyText);
           console.log(`Reply sent: ${replyText}`);
 
@@ -183,45 +189,6 @@ export async function setupTelegramListener(agent: Agent) {
 
           await saveTelegramReply(agent.agentId, msg.message_id, db);
           await incrementAgentTelegramReplyCount(agent.agentId, db);
-
-          // Handle registration or linking requests (always process these, even if not saved as a task)
-          if (!unified_user_id && text.toLowerCase().includes("register")) {
-            const linking_code = uuidv4().slice(0, 8);
-            const expires_at = new Date(Date.now() + 60 * 60 * 1000); // 1-hour expiration
-            await saveLinkingCode(userId, linking_code, expires_at);
-            await bot.sendMessage(chatId, `Please visit ${FRONTEND_URL}/register and use this code to register: ${linking_code}`);
-          } else if (!unified_user_id && text.toLowerCase().includes("link")) {
-            const linking_code = uuidv4().slice(0, 8);
-            const expires_at = new Date(Date.now() + 60 * 60 * 1000); // 1-hour expiration
-            await saveLinkingCode(userId, linking_code, expires_at);
-            await bot.sendMessage(chatId, `Use this code on another channel to link your accounts: ${linking_code}`);
-          } else if (!unified_user_id && text.toLowerCase().startsWith("link ")) {
-            const linking_code = text.split(" ")[1];
-            const linkingData = await findLinkingCode(linking_code);
-            if (linkingData && linkingData.expires_at > new Date()) {
-              let tempUser = await findTemporaryUserByChannelId("telegram_user_id", linkingData.channel_user_id);
-              if (!tempUser) {
-                tempUser = {
-                  temporary_user_id: uuidv4(),
-                  linked_channels: { telegram_user_id: linkingData.channel_user_id },
-                  created_at: new Date(),
-                  expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7-day expiration
-                };
-                await saveTemporaryUser(tempUser);
-              }
-              tempUser.linked_channels.telegram_user_id = userId;
-              await updateTemporaryUser(tempUser.temporary_user_id, tempUser);
-              await deleteLinkingCode(linking_code);
-              await bot.sendMessage(chatId, "Accounts linked! I’ll recognize you across channels now.");
-              // Update existing tasks with the temporary_user_id
-              await db.collection("tasks").updateMany(
-                { channel_user_id: { $in: [linkingData.channel_user_id, userId] } },
-                { $set: { temporary_user_id: tempUser.temporary_user_id } }
-              );
-            } else {
-              await bot.sendMessage(chatId, "Invalid or expired linking code. Send 'link' to get a new one.");
-            }
-          }
         } catch (error) {
           console.error(`Error generating reply for agent ${agent.agentId}:`, error);
           if (chatId) { // Ensure chatId is defined before sending
