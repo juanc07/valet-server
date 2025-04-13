@@ -29,7 +29,11 @@ interface TweetReply {
   repliedAt: Date;
 }
 
-const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+// too strict one day to become stale data
+//const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+// 6 months before become stale data
+const CACHE_TTL_MS = 6 * 30 * 24 * 60 * 60 * 1000;
 
 const maxPostPerDay = parseInt(MAX_POSTS_PER_DAY || '10', 10);
 const maxTweetReplyPerDay = parseInt(MAX_REPLIES_PER_DAY || '12', 10);
