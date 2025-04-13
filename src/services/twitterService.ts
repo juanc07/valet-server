@@ -212,7 +212,7 @@ async function setupTwitterStreamListenerPaid(agent: Agent, db: any): Promise<bo
           const user = await db.collection("users").findOne({
             $or: [
               { "linked_channels.twitter_user_id": tweet.author_id },
-              { twitterHandle: authorUsername },
+              { "twitterHandle": { $in: [authorUsername, `@${authorUsername}`] } }, // Match both username and @username
             ],
           });
           let unified_user_id: string | undefined;
@@ -438,7 +438,7 @@ async function setupTwitterMentionsListenerPaid(agent: Agent, db: any) {
             const user = await db.collection("users").findOne({
               $or: [
                 { "linked_channels.twitter_user_id": tweet.author_id },
-                { twitterHandle: authorUsername },
+                { "twitterHandle": { $in: [authorUsername, `@${authorUsername}`] } }, // Match both username and @username
               ],
             });
             let unified_user_id: string | undefined;
@@ -641,8 +641,8 @@ async function setupTwitterPollListenerPaid(agent: Agent, db: any) {
             // Identify user (registered only)
             const user = await db.collection("users").findOne({
               $or: [
-                { "linked_channels.twitter_user_id": tweet.author_id },
-                { twitterHandle: authorUsername },
+                { "linked_channels.twitter_user_id": tweet.author_id },                
+                { "twitterHandle": { $in: [authorUsername, `@${authorUsername}`] } }, // Match both username and @username
               ],
             });
             let unified_user_id: string | undefined;
