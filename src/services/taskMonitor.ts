@@ -6,6 +6,7 @@ import { Agent } from "../types/agent";
 import { TWITTER_INTEGRATION, TWITTER_APP_KEY, TWITTER_APP_SECRET } from "../config";
 import { getTelegramBot } from "./telegramService";
 import axios from "axios";
+import { getUsernameFromCache, saveUsernameToCache } from "../controllers/agentController";
 
 export class TaskMonitor {
   private static pollingInterval: NodeJS.Timeout | null = null;
@@ -26,8 +27,8 @@ export class TaskMonitor {
           .find({
             $or: [
               { status: { $in: ["pending", "in_progress", "awaiting_external"] } },
-              { status: "completed", notified: { $ne: true } }, // Include completed tasks that haven't been notified
-              { status: "failed", notified: { $ne: true } }, // Include failed tasks that haven't been notified
+              { status: "completed", notified: { $ne: true } },
+              { status: "failed", notified: { $ne: true } },
             ],
             created_at: {
               $gte: new Date(Date.now() - 60 * 1000), // 60s timeout for all tasks
@@ -102,71 +103,85 @@ export class TaskMonitor {
       }
 
       if (twitterClient && task.channel_user_id) {
-        const username = await this.getTwitterUsername(task.channel_user_id, twitterClient);
-        if (username) {
-          try {
-            const tweetOptions: any = {
-              text: `@${username} ${message.slice(0, 280 - username.length - 2)}`,
-              reply: { in_reply_to_tweet_id: task.channel_id.replace("twitter_", "") },
-            };
+        // Get username, ensuring it's always a string
+        let username: string;
+        const cachedUsername = await getUsernameFromCache(task.channel_user_id, db);
+        if (cachedUsername) {
+          console.log(`Cache hit for user ID ${task.channel_user_id}: ${cachedUsername}`);
+          username = cachedUsername;
+        } else {
+          console.log(`Cache miss for user ID ${task.channel_user_id}, attempting API fetch`);
+          const apiUsername = await this.getTwitterUsername(task.channel_user_id, twitterClient, db);
+          username = apiUsername || `user_${task.channel_user_id}`;
+          console.log(`Using username for user ID ${task.channel_user_id}: ${username}`);
+        }
 
-            // Handle image generation tasks
-            if (
-              task.task_type === "api_call" &&
-              task.status === "completed" &&
-              task.result &&
-              task.external_service?.service_name === "image_generation"
-            ) {
-              if (this.isValidImageUrl(task.result)) {
-                // Download the image
-                const response = await axios.get(task.result, { responseType: "arraybuffer" });
-                const imageBuffer = Buffer.from(response.data, "binary");
-                console.log(`Downloaded image for task ${task.task_id}: ${task.result}`);
+        try {
+          const tweetOptions: any = {
+            text: `@${username} ${message.slice(0, 280 - username.length - 2)}`,
+            reply: { in_reply_to_tweet_id: task.channel_id.replace("twitter_", "") },
+          };
 
-                // Upload the image to Twitter
-                const mediaId = await twitterClient.v1.uploadMedia(imageBuffer, { mimeType: "image/png" });
-                console.log(`Uploaded image to Twitter for task ${task.task_id}, mediaId: ${mediaId}`);
+          // Handle image generation tasks
+          if (
+            task.task_type === "api_call" &&
+            task.status === "completed" &&
+            task.result &&
+            task.external_service?.service_name === "image_generation"
+          ) {
+            if (this.isValidImageUrl(task.result)) {
+              // Download the image
+              const response = await axios.get(task.result, { responseType: "arraybuffer" });
+              const imageBuffer = Buffer.from(response.data);
+              console.log(`Downloaded image for task ${task.task_id}: ${task.result}, size: ${imageBuffer.length} bytes`);
 
-                // Attach the media to the tweet
-                tweetOptions.media = { media_ids: [mediaId] };
-              } else {
-                await twitterClient.v2.tweet({
-                  text: `@${username} Error: Invalid image generated. Please try again.`,
-                  reply: { in_reply_to_tweet_id: task.channel_id.replace("twitter_", "") },
-                });
-                await db.collection("tasks").updateOne(
-                  { task_id: task.task_id },
-                  { $set: { status: "failed", result: "Invalid image URL", completed_at: new Date(), notified: false } }
-                );
-                console.error(`Invalid image URL for task ${task.task_id}: ${task.result}`);
-                return;
-              }
-            }
+              // Upload the image to Twitter
+              const mediaId = await twitterClient.v1.uploadMedia(imageBuffer, { mimeType: "image/png" });
+              console.log(`Uploaded image to Twitter for task ${task.task_id}, mediaId: ${mediaId}`);
 
-            await twitterClient.v2.tweet(tweetOptions);
-            console.log(`Notified Twitter user ${username} for task ${task.task_id}: ${message}`);
-            if (tweetOptions.media) {
-              console.log(`Attached image to tweet for task ${task.task_id}, mediaId: ${tweetOptions.media.media_ids[0]}`);
-            }
-          } catch (error) {
-            console.error(`Error notifying Twitter user for task ${task.task_id}:`, error);
-            try {
+              // Attach the media to the tweet
+              tweetOptions.media = { media_ids: [mediaId] };
+            } else {
               await twitterClient.v2.tweet({
-                text: `@${username} Failed to process your request. Please try again.`,
+                text: `@${username} Error: Invalid image generated. Please try again.`,
                 reply: { in_reply_to_tweet_id: task.channel_id.replace("twitter_", "") },
               });
               await db.collection("tasks").updateOne(
                 { task_id: task.task_id },
-                { $set: { status: "failed", result: "Notification error", completed_at: new Date(), notified: false } }
+                { $set: { status: "failed", result: "Invalid image URL", completed_at: new Date(), notified: false } }
               );
-              console.log(`Marked task ${task.task_id} as failed due to notification error`);
-            } catch (sendError) {
-              console.error(`Error sending fallback message for task ${task.task_id}:`, sendError);
+              console.error(`Invalid image URL for task ${task.task_id}: ${task.result}`);
+              return;
             }
           }
-        } else {
-          console.error(`No Twitter username found for user ${task.channel_user_id}, task ${task.task_id}`);
+
+          await twitterClient.v2.tweet(tweetOptions);
+          console.log(`Notified Twitter user ${username} for task ${task.task_id}: ${message}`);
+          if (tweetOptions.media) {
+            console.log(`Attached image to tweet for task ${task.task_id}, mediaId: ${tweetOptions.media.media_ids[0]}`);
+          }
+        } catch (error: any) {
+          console.error(`Error notifying Twitter user for task ${task.task_id}:`, error);
+          if (error.code === 429) {
+            console.log(`Rate limit hit for task ${task.task_id}, keeping notified=false for retry`);
+            return; // Allow retry
+          }
+          try {
+            await twitterClient.v2.tweet({
+              text: `@${username} Failed to process your request. Please try again.`,
+              reply: { in_reply_to_tweet_id: task.channel_id.replace("twitter_", "") },
+            });
+            await db.collection("tasks").updateOne(
+              { task_id: task.task_id },
+              { $set: { status: "failed", result: "Notification error", completed_at: new Date(), notified: false } }
+            );
+            console.log(`Marked task ${task.task_id} as failed due to notification error`);
+          } catch (sendError) {
+            console.error(`Error sending fallback message for task ${task.task_id}:`, sendError);
+          }
         }
+      } else {
+        console.error(`No Twitter client or user ID for task ${task.task_id}`);
       }
     } else if (task.channel_id.match(/^-?\d+$/)) {
       let bot = this.telegramBots.get(task.agent_id) || getTelegramBot(task.agent_id);
@@ -217,14 +232,20 @@ export class TaskMonitor {
     }
   }
 
-  static async getTwitterUsername(userId: string, client: TwitterApi): Promise<string | undefined> {
+  static async getTwitterUsername(userId: string, client: TwitterApi, db: any): Promise<string | null> {
     try {
       const user = await client.v2.user(userId, { "user.fields": ["username"] });
-      console.log(`Fetched Twitter username for user ${userId}: ${user.data?.username}`);
-      return user.data?.username;
+      const username = user.data?.username ?? null;
+      if (username) {
+        console.log(`Fetched Twitter username for user ${userId}: ${username}`);
+        await saveUsernameToCache(userId, username, db);
+      } else {
+        console.error(`No username found in API response for user ${userId}`);
+      }
+      return username;
     } catch (error) {
       console.error(`Error fetching Twitter username for ${userId}:`, error);
-      return undefined;
+      return null;
     }
   }
 
@@ -239,10 +260,13 @@ export class TaskMonitor {
   static isValidImageUrl(url: string): boolean {
     try {
       const urlObj = new URL(url);
-      // Split the pathname to ignore query parameters
       const pathname = urlObj.pathname;
-      const isValid = /\.(jpg|jpeg|png|gif|bmp)$/i.test(pathname);
-      console.log(`Validated image URL ${url}: isValid=${isValid}, pathname=${pathname}`);
+      const isStandardImage = /\.(jpg|jpeg|png|gif|bmp)$/i.test(pathname);
+      const isOpenAIImage =
+        urlObj.hostname.includes("oaidalleapiprodscus.blob.core.windows.net") &&
+        /\/img-[A-Za-z0-9]+\.(png|jpg|jpeg)$/i.test(pathname);
+      const isValid = isStandardImage || isOpenAIImage;
+      console.log(`Validated image URL ${url}: isValid=${isValid}, pathname=${pathname}, isStandardImage=${isStandardImage}, isOpenAIImage=${isOpenAIImage}`);
       return isValid;
     } catch (error) {
       console.error(`Invalid image URL ${url}:`, error);
