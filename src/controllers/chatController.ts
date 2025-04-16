@@ -107,7 +107,7 @@ export const chatWithAgent = async (req: Request<ChatParams, any, ChatRequestBod
     if (!canAnswerFromKnowledge) {
       // Modified: Combine TaskClassifier and shouldSaveAsTask
       const classification = await TaskClassifier.classifyTask(message, agent, recentTasks);
-      const shouldSave = shouldSaveAsTask(message, hasRecentTasks);
+      const shouldSave = shouldSaveAsTask(message);
       console.log(`Classification for "${message}":`, {
         taskClassifier: classification,
         shouldSaveAsTask: shouldSave,
@@ -315,7 +315,7 @@ export const chatWithAgentStream = async (req: Request<ChatParams, any, ChatRequ
     } else {
       // Modified: Combine TaskClassifier and shouldSaveAsTask
       const classification = await TaskClassifier.classifyTask(message, agent, recentTasks);
-      const shouldSave = shouldSaveAsTask(message, hasRecentTasks);
+      const shouldSave = shouldSaveAsTask(message);
       console.log(`Classification for "${message}":`, {
         taskClassifier: classification,
         shouldSaveAsTask: shouldSave,

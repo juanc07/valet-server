@@ -249,7 +249,7 @@ async function setupTwitterStreamListenerPaid(agent: Agent, db: any): Promise<bo
 
           // Classify and handle task
           const classification = await TaskClassifier.classifyTask(tweet.text || "No text provided", agent, recentTasks);
-          const shouldSaveTask = shouldSaveAsTask(tweet.text || "No text provided", hasRecentTasks);
+          const shouldSaveTask = shouldSaveAsTask(tweet.text || "No text provided");
 
           if (classification.task_type !== "chat" || shouldSaveTask) {
             task_id = uuidv4();
@@ -475,7 +475,7 @@ async function setupTwitterMentionsListenerPaid(agent: Agent, db: any) {
 
             // Classify and handle task
             const classification = await TaskClassifier.classifyTask(tweet.text || "No text provided", agent, recentTasks);
-            const shouldSaveTask = shouldSaveAsTask(tweet.text || "No text provided", hasRecentTasks);
+            const shouldSaveTask = shouldSaveAsTask(tweet.text || "No text provided");
 
             if (classification.task_type !== "chat" || shouldSaveTask) {
               task_id = uuidv4();
@@ -677,7 +677,7 @@ async function setupTwitterPollListenerPaid(agent: Agent, db: any) {
 
             // Classify and handle task
             const classification = await TaskClassifier.classifyTask(tweet.text || "No text provided", agent, recentTasks);
-            const shouldSaveTask = shouldSaveAsTask(tweet.text || "No text provided", hasRecentTasks);
+            const shouldSaveTask = shouldSaveAsTask(tweet.text || "No text provided");
 
             if (classification.task_type !== "chat" || shouldSaveTask) {
               task_id = uuidv4();

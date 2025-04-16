@@ -125,7 +125,7 @@ export async function setupTelegramListener(agent: Agent) {
           // Classify and handle task
           const classification = await TaskClassifier.classifyTask(text, agent, recentTasks);
           console.log(`Task classification for message "${text}": type=${classification.task_type}, service=${classification.service_name}`);
-          const shouldSaveTask = shouldSaveAsTask(text, hasRecentTasks);
+          const shouldSaveTask = shouldSaveAsTask(text);
 
           if (classification.task_type !== "chat" || shouldSaveTask) {
             // Validate image generation tasks
